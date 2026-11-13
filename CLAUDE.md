@@ -39,8 +39,15 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
   via the `windows` crate.
 - Exact usable minimum brightness level (100 accepted; visual check needed).
 - Reconnect handling (display unplug / sleep).
+- Windows often shows "USB device not recognized" when the display is plugged
+  in (needs several replugs). Root cause is below the app (firmware /
+  Thunderbolt / power management). **No automation that needs admin rights**
+  (user decision) – the app only re-opens the HID device when it reappears.
 
 ## Tools
 
 `tools/uf_probe.py` (hidapi Python) – `list`, `bright`, `set <lvl> [ms]`,
 `als [seconds]`, `poll`. The `.command` scripts are the macOS test runs.
+`tools/win_diag.cmd` (+ `win_diag.ps1`) is the Windows run: read-only
+diagnostics (USB problem devices, LG devices, power settings, event logs,
+WinRT LightSensor, hidapi test), writes `win_diag_<timestamp>.log`.
