@@ -3,7 +3,7 @@
 Brightness hotkeys and automatic brightness (via the built-in ambient light
 sensor) for the LG UltraFine 5K display on Windows.
 
-Status: protocol verified (see `docs/PROTOCOL.md`). App v0.5.
+Status: protocol verified (see `docs/PROTOCOL.md`). App v0.6.
 
 ## Use
 
@@ -17,17 +17,17 @@ reason in brackets.
   a popup like the Windows one, labelled "LG UltraFine", appears on the LG
 - **Mode ▸**
   - *Manual* (default; the last choice is remembered)
-  - *Automatic – light sensor*: brightness follows the light level along the
-    brightness curve. Adjusting brightness yourself teaches the curve for
-    the current light level; automatic mode keeps running
+  - *Automatic – light sensor*: brightness follows the display's light
+    sensor along the light-sensor curve
   - *Automatic – follow laptop screen*: the LG follows the laptop screen's
-    brightness, whatever changes it (the laptop's own auto brightness,
-    Fn+F5/F6, Windows slider). Your adjustments set the LG's offset to the
-    laptop. With the lid closed it uses the light sensor instead
-- **Light sensor ▸ LG display / Laptop** – the laptop sensor needs the lid
-  open (otherwise the LG sensor is used)
-- **Brightness curve…** – drag points, double-click to add, right-click to
-  remove; the current light level is shown live
+    brightness (whatever changes it: the laptop's auto brightness, Fn+F5/F6,
+    the Windows slider) along the follow curve. With the lid closed the
+    light sensor is used instead
+  - In both automatic modes, adjusting brightness yourself teaches the
+    active curve for the current light level / laptop brightness
+- **Brightness curve…** – edits the curve of the selected automatic mode:
+  drag points, double-click to add, right-click to remove; the current
+  input is shown live
 - **Shortcuts ▸** – click one and press the new combination (Fn
   combinations cannot be used; the laptop handles them in its firmware)
 - **Popup on brightness keys**, **Fix black screen on connect**,

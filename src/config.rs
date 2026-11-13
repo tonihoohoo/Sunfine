@@ -31,13 +31,14 @@ pub struct Config {
     pub auto_mode: AutoMode,
     /// Show the brightness popup on hotkey changes.
     pub osd: bool,
-    /// Which light sensor drives the curve: the LG's own or the laptop's.
-    pub light_source: LightSource,
-    /// Auto-brightness curve: brightness (%) for each light level (lux).
+    /// Light-sensor curve: LG brightness (%) for each light level (lux).
     /// Edited in the curve window, and learned from manual adjustments.
     pub curve: Vec<CurvePoint>,
-    /// Pair (laptop panel %, LG level) that looked equal; set on the first
-    /// sync and whenever the user adjusts the LG while syncing.
+    /// Follow-laptop curve: LG brightness (%) for each laptop screen
+    /// brightness (%). Edited and learned the same way.
+    pub follow_curve: Option<Vec<FollowPoint>>,
+    /// v0.4-0.5 single calibration pair; read once to seed `follow_curve`.
+    #[serde(skip_serializing)]
     pub sync_cal: Option<SyncCal>,
     pub hotkeys: Hotkeys,
 }
@@ -53,21 +54,19 @@ pub enum AutoMode {
     FollowLaptop,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LightSource {
-    /// The display's own sensor (top bezel).
-    #[default]
-    Display,
-    /// The laptop's sensor (Windows LightSensor) – reacts like the laptop's
-    /// own adaptive brightness.
-    Laptop,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct CurvePoint {
     pub lux: f64,
     pub percent: f64,
+}
+
+/// A point of the follow-laptop curve.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct FollowPoint {
+    /// Laptop screen brightness, %.
+    pub laptop: f64,
+    /// LG brightness, %.
+    pub lg: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -92,6 +91,38 @@ pub fn default_curve() -> Vec<CurvePoint> {
         .collect()
 }
 
+/// LG % for laptop %: proportional, LG darker (user's setup: laptop 66 % ~
+/// LG 26 %).
+pub fn default_follow() -> Vec<FollowPoint> {
+    vec![
+        FollowPoint {
+            laptop: 0.0,
+            lg: 1.0,
+        },
+        FollowPoint {
+            laptop: 100.0,
+            lg: 40.0,
+        },
+    ]
+}
+
+/// Follow curve from a v0.4-0.5 calibration pair (proportional through it).
+fn follow_from_cal(cal: SyncCal) -> Vec<FollowPoint> {
+    let panel = (cal.panel.max(1)) as f64;
+    let lg = cal.level as f64 * 100.0 / crate::device::MAX_LEVEL as f64;
+    vec![
+        FollowPoint {
+            laptop: 0.0,
+            lg: 0.5,
+        },
+        FollowPoint { laptop: panel, lg },
+        FollowPoint {
+            laptop: 100.0,
+            lg: (lg * 100.0 / panel).min(100.0),
+        },
+    ]
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -104,8 +135,10 @@ impl Default for Config {
             fix_black_screen: true,
             auto_mode: AutoMode::FollowLaptop,
             osd: true,
-            light_source: LightSource::Display,
             curve: default_curve(),
+            // None = "not in the file": `sanitized()` fills it (and migrates
+            // an old `sync_cal`). Use `follow()` to read it.
+            follow_curve: None,
             sync_cal: None,
             hotkeys: Hotkeys::default(),
         }
@@ -177,6 +210,11 @@ impl Config {
         Ok(())
     }
 
+    /// The follow-laptop curve (default when not set).
+    pub fn follow(&self) -> Vec<FollowPoint> {
+        self.follow_curve.clone().unwrap_or_else(default_follow)
+    }
+
     /// Clamps values into ranges the device and the math can handle.
     pub fn sanitized(mut self) -> Self {
         let d = Self::default();
@@ -193,6 +231,12 @@ impl Config {
             self.step_factor = 1.2;
         }
         self.curve = crate::curve::sanitize_curve(std::mem::take(&mut self.curve));
+        let follow = match (self.follow_curve.take(), self.sync_cal.take()) {
+            (Some(f), _) => f,
+            (None, Some(cal)) => follow_from_cal(cal),
+            (None, None) => default_follow(),
+        };
+        self.follow_curve = Some(crate::curve::sanitize_follow(follow));
         self
     }
 }
@@ -206,15 +250,21 @@ mod tests {
         let cfg = Config::default();
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
-        let cfg = Config {
-            sync_cal: Some(SyncCal {
-                panel: 66,
-                level: 14307,
-            }),
-            ..Config::default()
-        };
-        let text = toml::to_string_pretty(&cfg).unwrap();
-        assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
+
+        // An old calibration pair seeds the follow curve and is not written back.
+        let old: Config = toml::from_str("[sync_cal]\npanel = 66\nlevel = 14307\n").unwrap();
+        assert!(old.follow_curve.is_none());
+        let migrated = old.sanitized();
+        let f = migrated.follow_curve.clone().unwrap();
+        assert!(
+            f.iter()
+                .any(|p| p.laptop == 66.0 && (p.lg - 26.49).abs() < 0.1),
+            "{f:?}"
+        );
+        assert!(migrated.sync_cal.is_none());
+        let text = toml::to_string_pretty(&migrated).unwrap();
+        assert!(!text.contains("sync_cal"), "{text}");
+        assert!(text.contains("[[follow_curve]]"), "{text}");
 
         // Missing keys fall back to defaults; old keys are ignored.
         let partial: Config = toml::from_str(
@@ -244,13 +294,12 @@ mod tests {
 
     #[test]
     fn enum_values_in_toml() {
+        // light_source (removed in 0.6) is ignored.
         let cfg: Config =
             toml::from_str("auto_mode = \"light_sensor\"\nlight_source = \"laptop\"\n").unwrap();
         assert_eq!(cfg.auto_mode, AutoMode::LightSensor);
-        assert_eq!(cfg.light_source, LightSource::Laptop);
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         assert!(text.contains("auto_mode = \"follow_laptop\""), "{text}");
-        assert!(text.contains("light_source = \"display\""), "{text}");
         // A typo falls back to an error the loader reports, not a panic.
         assert!(toml::from_str::<Config>("auto_mode = \"sideways\"").is_err());
     }

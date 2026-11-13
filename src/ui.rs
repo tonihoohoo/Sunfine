@@ -243,9 +243,24 @@ impl Osd {
             let y = pos.y + size.height as i32 - h - (96.0 * scale) as i32;
             self.window.set_outer_position(PhysicalPosition::new(x, y));
         }
+        // Moving to a monitor with another scale changes the size; make
+        // sure it is the intended logical size there before drawing.
+        self.window.set_inner_size(LogicalSize::new(OSD_W, OSD_H));
         self.window.set_visible(true);
         self.draw();
+        self.window.request_redraw();
         self.hide_at = Some(Instant::now() + OSD_SHOW);
+    }
+
+    /// Redraw after a resize / DPI change while visible.
+    pub fn handle(&mut self, event: &WindowEvent) {
+        if matches!(
+            event,
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. }
+        ) && self.hide_at.is_some()
+        {
+            self.draw();
+        }
     }
 
     /// Hides when due; returns the next wake-up time while visible.
@@ -262,7 +277,9 @@ impl Osd {
 
     pub fn draw(&mut self) {
         let size = self.window.inner_size();
-        let scale = self.window.scale_factor() as f32;
+        // Scale from the actual width: if Windows has not applied a DPI
+        // change yet, the layout still fits the window (v0.5: cut-off text).
+        let scale = size.width as f32 / OSD_W as f32;
         let Some(pm) = render_osd(
             &self.painter,
             size.width,

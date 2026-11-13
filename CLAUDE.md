@@ -69,6 +69,14 @@ panel is valid; laptop lux held 5 s on read errors; settings file reloaded
 when edited, never overwritten while broken/changed (`Store`); shortcuts
 suspended during capture, reset registers all at once; worker testable via
 `Device`/`Connector` traits with a simulated display (64 tests).
+v0.6: laptop light-sensor option removed; follow-laptop uses its own
+editable/learned curve (`follow_curve`, laptop % -> LG %, linear axis;
+`curve::Axis` LogLux|Percent shared by both curves and the editor); old
+`sync_cal` migrates into it; single instance (`src/single.rs`: named mutex +
+quit event – a new copy replaces the old; two copies fighting over the
+display looked like "brightness does not change"); popup lays out from its
+actual size and redraws on resize/DPI change; manual changes read the level
+back and log mismatches.
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 

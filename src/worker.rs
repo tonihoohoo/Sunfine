@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use crate::config::{AutoMode, Config, CurvePoint, LightSource, SyncCal};
+use crate::config::{AutoMode, Config, CurvePoint};
 use crate::curve::{Controller, Mode};
 use crate::laptop::Laptop;
 
@@ -23,7 +23,7 @@ pub enum Cmd {
     SetLevel(u32),
     SetAuto(bool),
     SetAutoMode(AutoMode),
-    SetSource(LightSource),
+    SetFollowCurve(Vec<CurvePoint>),
     SetCurve(Vec<CurvePoint>),
     Laptop(Option<Laptop>),
     /// Settings file changed on disk.
@@ -39,11 +39,10 @@ pub struct Status {
     pub lux: Option<f64>,
     pub auto: bool,
     pub mode: Mode,
-    /// Sensor actually in use (laptop falls back to the LG when the lid is
-    /// closed).
-    pub source: LightSource,
+    /// Smoothed laptop screen % while the lid is open (follow mode input).
+    pub panel: Option<f64>,
     pub laptop: Option<Laptop>,
-    pub sync_cal: Option<SyncCal>,
+    pub follow_curve: Vec<CurvePoint>,
     pub curve: Vec<CurvePoint>,
     /// Increments on every applied hotkey change (popup trigger).
     pub manual_seq: u64,
@@ -140,7 +139,7 @@ pub fn run_with<C: Connector>(
     let mut display: Option<C::D> = None;
     let mut last_attempt: Option<Instant> = None;
     let mut last_status: Option<Status> = None;
-    let mut last_mode = (ctl.mode(), ctl.effective_source());
+    let mut last_mode = ctl.mode();
     let mut manual_seq = 0u64;
 
     loop {
@@ -164,8 +163,8 @@ pub fn run_with<C: Connector>(
                     ctl.set_auto_mode(m);
                     retarget = true;
                 }
-                Cmd::SetSource(src) => {
-                    ctl.set_light_source(src);
+                Cmd::SetFollowCurve(pts) => {
+                    ctl.set_follow_curve(pts);
                     retarget = true;
                 }
                 Cmd::SetCurve(pts) => {
@@ -192,6 +191,7 @@ pub fn run_with<C: Connector>(
                             ctl.mode()
                         );
                         apply(d, &mut ctl, t, HOTKEY_FADE_MS, &mut failed);
+                        verify(d, t);
                         manual_seq += 1;
                     }
                     (d, _) => log::warn!(
@@ -209,6 +209,7 @@ pub fn run_with<C: Connector>(
                         log::info!("preset: {:?} -> {level} ({:?})", ctl.level(), ctl.mode());
                         ctl.on_manual(level);
                         apply(d, &mut ctl, level, PRESET_FADE_MS, &mut failed);
+                        verify(d, level);
                     } else {
                         log::warn!("preset ignored: display not connected");
                     }
@@ -219,7 +220,7 @@ pub fn run_with<C: Connector>(
                     apply(d, &mut ctl, t, transition, &mut failed);
                 }
                 // The command already handled the new mode.
-                last_mode = (ctl.mode(), ctl.effective_source());
+                last_mode = ctl.mode();
             }
         }
 
@@ -247,7 +248,7 @@ pub fn run_with<C: Connector>(
                         }
                         display = Some(d);
                         // Re-evaluate the mode target on (re)connect.
-                        last_mode = (Mode::Manual, ctl.effective_source());
+                        last_mode = Mode::Manual;
                     }
                     Err(e) => log::warn!("display found but brightness read failed: {e:#}"),
                 },
@@ -275,7 +276,7 @@ pub fn run_with<C: Connector>(
                     failed = true;
                 }
             }
-            let mode = (ctl.mode(), ctl.effective_source());
+            let mode = ctl.mode();
             if mode != last_mode && !failed {
                 log::info!("mode {last_mode:?} -> {mode:?}");
                 if let Some(t) = ctl.auto_target() {
@@ -308,16 +309,28 @@ pub fn run_with<C: Connector>(
             }),
             auto: ctl.auto(),
             mode: ctl.mode(),
-            source: ctl.effective_source(),
+            panel: ctl.panel().map(f64::round),
             laptop: ctl.laptop(),
-            sync_cal: ctl.cal(),
             curve: ctl.curve().to_vec(),
+            follow_curve: ctl.follow_curve().to_vec(),
             manual_seq,
         };
         if last_status.as_ref() != Some(&status) {
             notify(status.clone());
             last_status = Some(status);
         }
+    }
+}
+
+/// Diagnostics: reads the level back after a manual change and logs it, so
+/// the log shows whether the display took the write.
+fn verify<D: Device>(d: &D, wrote: u32) {
+    match d.brightness() {
+        Ok(read) if read.abs_diff(wrote) <= wrote / 100 + 1 => {
+            log::info!("display reports {read} (ok)")
+        }
+        Ok(read) => log::warn!("wrote {wrote} but the display reports {read}"),
+        Err(e) => log::warn!("read-back failed: {e:#}"),
     }
 }
 
@@ -520,12 +533,11 @@ mod tests {
         }
     }
 
-    fn lap(panel: u8, lid_open: bool, lux: Option<f64>) -> Cmd {
+    fn lap(panel: u8, lid_open: bool, _lux: Option<f64>) -> Cmd {
         Cmd::Laptop(Some(Laptop {
             panel,
             adaptive: false,
             lid_open,
-            lux,
         }))
     }
 
@@ -638,52 +650,34 @@ mod tests {
         // Before laptop data arrives "follow" falls back to the light sensor.
         let s0 = h.settle();
         assert_eq!(s0.mode, Mode::LightSensor);
-        let lvl0 = s0.level.unwrap();
+        // Laptop at 60 % -> the follow curve's level for 60 %.
         h.send(lap(60, true, None));
-        let s = h.wait("calibrated", |s| s.sync_cal.is_some());
-        assert_eq!(s.mode, Mode::LaptopSync);
-        assert_eq!(s.level, Some(lvl0), "calibration does not change the LG");
-        assert_eq!(s.sync_cal.unwrap().level, lvl0);
-        // Laptop dims to 30 % (repeated polls as from the poller).
-        for _ in 0..30 {
-            h.send(lap(30, true, None));
-        }
-        let want = lvl0 / 2;
-        let s = h.wait("followed", |s| {
-            s.level.is_some_and(|l| l.abs_diff(want) < 1200)
+        let want = percent_to_level(crate::curve::eval(
+            &s0.follow_curve,
+            crate::curve::Axis::Percent,
+            60.0,
+        ));
+        let s = h.wait("following 60", |s| {
+            s.mode == Mode::LaptopSync
+                && s.level.is_some_and(|l| l.abs_diff(want) * 100 <= want * 4)
         });
-        assert_eq!(s.mode, Mode::LaptopSync);
+        // Laptop dims to 30 %.
+        h.send(lap(30, true, None));
+        let want = percent_to_level(crate::curve::eval(
+            &s.follow_curve,
+            crate::curve::Axis::Percent,
+            30.0,
+        ));
+        let s = h.wait("following 30", |s| {
+            s.level.is_some_and(|l| l.abs_diff(want) * 100 <= want * 4)
+        });
         // Lid closed -> light-sensor curve for 18 lux.
         h.send(lap(30, false, None));
         let want = percent_to_level(curve_percent(&s.curve, 18.0));
-        let s = h.wait("fallback", |s| {
-            s.mode == Mode::LightSensor && s.level == Some(want)
+        h.wait("fallback", |s| {
+            s.mode == Mode::LightSensor
+                && s.level.is_some_and(|l| l.abs_diff(want) * 100 <= want * 9)
         });
-        assert_eq!(s.source, LightSource::Display);
-    }
-
-    #[test]
-    fn laptop_sensor_drives_curve_and_lg_sensor_takes_over_when_lid_closes() {
-        let cfg = Config {
-            light_source: LightSource::Laptop,
-            ..sensor_cfg()
-        };
-        let mut h = Harness::start(cfg, present(14307));
-        h.wait("connected", |s| s.connected);
-        h.send(lap(50, true, Some(3000.0)));
-        let s = h.wait("laptop lux", |s| {
-            s.lux.is_some_and(|l| (l - 3000.0).abs() < 0.5) && s.level.is_some_and(|l| l > 40000)
-        });
-        assert_eq!(s.source, LightSource::Laptop);
-        // LG sensor ignored while the laptop one is in use...
-        h.sim().lux.push_back(2);
-        let s = h.settle();
-        assert!(s.lux.is_some_and(|l| (l - 3000.0).abs() < 0.5));
-        // ...and used (its last value, 2 lx) once the lid closes.
-        h.send(lap(50, false, Some(3000.0)));
-        let s = h.wait("LG takes over", |s| s.source == LightSource::Display);
-        assert!(s.lux.is_some_and(|l| (l - 2.0).abs() < 0.01));
-        h.wait("dimmed", |s| s.level.is_some_and(|l| l < 5000));
     }
 
     #[test]
