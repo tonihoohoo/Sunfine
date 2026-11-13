@@ -56,7 +56,19 @@ low; lux = 2^(hi>>4) * ((hi&0x0F)<<4 | lo&0x0F) * 0.045. Do not read reg 0x00
 First lux attempt (`docs/logs/win_i2c_als_1.log`): XFER (ptr + read) on
 0x4A/0x4B returns OK but **all zeros**; OK responses carry only the n read
 bytes (length = 4 + n), unlike the NXP reference. Read path not yet
-validated -> `uf_probe.py i2c-diag`. Probe:
+validated -> `uf_probe.py i2c-diag`.
+
+`i2c-diag` (`docs/logs/win_i2c_als_2.log`):
+- Read path works: 0x37 plain read -> `02 01 fd 00 00 00`; 0x54 XFER from
+  offset 0 -> `00 01 00 ...` (non-zero data comes back).
+- 0x4A: every read (plain, after pointer write, XFER) is zeros -> probably
+  **not** a MAX44009 (its config/threshold regs are non-zero at reset).
+- **A 1-byte pointer write (0x03) to 0x4B got no response and the bridge
+  stopped answering entirely**, also from a fresh process. Recovery: power
+  cycle the display. Pointer-write commands are now disabled by default.
+- Conclusion so far: the ALS chip is not visible as a MAX44009 here; the
+  display MCU that feeds HID iface 2 probably owns the sensor on another bus.
+  I2C exploration paused (risk vs. yield). Probe:
 `uf_probe.py i2c-lux [s]` / `i2c-regs <addr> <reg> <n>` (pointer write + read;
 no register is modified).
 

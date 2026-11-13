@@ -17,7 +17,9 @@ Iface 0 ("HID I2C") is an NXP LPCUSBSIO USB-HID to I2C bridge (LG Screen
 Manager talks DDC/CI and firmware update through it). Protocol from NXP
 LPCOpen lpcusbsio_i2c.h: 64-byte reports, header
     u8 length, u8 transId, u8 sesId (= I2C port), u8 req, data...
-SAFETY: only DEV_INFO, INIT_PORT and 1-byte DEVICE_READ are used here.
+SAFETY: info/scan/diag use only DEV_INFO, INIT_PORT and DEVICE_READ.
+i2c-regs / i2c-lux write a register pointer byte and are disabled by default:
+on 2026-11-13 a 1-byte write to 0x4B hung the bridge (no more responses).
 Never send DEVICE_WRITE / XFER blindly: the bus reaches firmware/EEPROM.
 
 Descriptor findings (from ioreg dump):
@@ -340,15 +342,8 @@ def i2c_diag():
         print(f"INIT_PORT: {SIO_RES.get(resp, resp)} {data!r}")
         rd(0x37, 6, "DDC/CI: idle read should give 6e 80 be or similar, not zeros")
         rd(0x54, 8, "EEPROM: current address, likely non-zero")
-        xf(0x54, 0x00, 8, 0, "EEPROM from offset 0")
         rd(0x4A, 8, "ALS? current pointer")
         rd(0x4B, 8, "ALS? current pointer")
-        for a in (0x4A, 0x4B):
-            ptr(a, 0x03, "MAX44009 lux high register")
-            rd(a, 2, "lux high/low after pointer write")
-            xf(a, 0x03, 2, 0, "lux via XFER opts 0")
-            xf(a, 0x03, 2, 0x02, "lux via XFER opts 2 (ack last)")
-        rd(0x6B, 4, "unknown device")
     finally:
         b.close()
 
@@ -363,12 +358,16 @@ if __name__ == "__main__":
         args = sys.argv[2:]
         port = int(args[args.index("--port") + 1]) if "--port" in args else 0
         i2c_scan(init="--init" in args, port=port)
+    elif cmd in ("i2c-regs", "i2c-lux") and "--i-know" not in sys.argv:
+        sys.exit("Disabled: a 1-byte pointer write to 0x4B hung the bridge on "
+                 "2026-11-13 (see docs/PROTOCOL.md). Add --i-know to run anyway.")
     elif cmd == "i2c-regs":
         i2c_regs(int(sys.argv[2], 0), int(sys.argv[3], 0), int(sys.argv[4], 0))
     elif cmd == "i2c-diag":
         i2c_diag()
     elif cmd == "i2c-lux":
-        i2c_lux(float(sys.argv[2]) if len(sys.argv) > 2 else 30)
+        nums = [a for a in sys.argv[2:] if not a.startswith("--")]
+        i2c_lux(float(nums[0]) if nums else 30)
     elif cmd == "als":
         als(float(sys.argv[2]) if len(sys.argv) > 2 else None)
     else:
