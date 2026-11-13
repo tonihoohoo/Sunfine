@@ -18,7 +18,7 @@ pub enum State {
 }
 
 #[cfg(windows)]
-pub use imp::{apply_persisted_layout, state};
+pub use imp::{apply_persisted_layout, internal_panel_active, lg_gdi_names, state};
 
 #[cfg(not(windows))]
 pub fn state() -> anyhow::Result<State> {
@@ -28,6 +28,12 @@ pub fn state() -> anyhow::Result<State> {
 #[cfg(not(windows))]
 pub fn apply_persisted_layout() -> anyhow::Result<()> {
     Ok(())
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn lg_gdi_names() -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(windows)]
@@ -42,7 +48,14 @@ mod imp {
         SDC_APPLY, SDC_USE_DATABASE_CURRENT,
     };
 
-    use windows::Win32::Graphics::Gdi::DISPLAYCONFIG_PATH_ACTIVE;
+    use windows::core::PCWSTR;
+    use windows::Win32::Devices::Display::{
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED,
+        DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL, DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED,
+    };
+    use windows::Win32::Graphics::Gdi::{
+        EnumDisplayDevicesW, DISPLAYCONFIG_PATH_ACTIVE, DISPLAY_DEVICEW,
+    };
 
     /// EDID manufacturer + product of the LG UltraFine 5K (27MD5KA).
     const LG_EDID: &str = "GSM5B11";
@@ -104,6 +117,52 @@ mod imp {
             .iter()
             .any(|p| active(p) && is_lg(p));
         Ok(if wanted { State::Fault } else { State::UserOff })
+    }
+
+    /// Laptop lid open: an internal / embedded panel has an active path.
+    pub fn internal_panel_active() -> Result<bool> {
+        Ok(query(QDC_ONLY_ACTIVE_PATHS)?.iter().any(|p| {
+            let t = p.targetInfo.outputTechnology;
+            t == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL
+                || t == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EMBEDDED
+                || t == DISPLAYCONFIG_OUTPUT_TECHNOLOGY_UDI_EMBEDDED
+        }))
+    }
+
+    /// GDI device names (`\\.\DISPLAYn`) of outputs that drive the LG –
+    /// tao's `MonitorHandle::name()` returns the same strings on Windows.
+    pub fn lg_gdi_names() -> Vec<String> {
+        let mut out = Vec::new();
+        unsafe {
+            for i in 0.. {
+                let mut a = DISPLAY_DEVICEW {
+                    cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+                    ..Default::default()
+                };
+                if !EnumDisplayDevicesW(PCWSTR::null(), i, &mut a, 0).as_bool() {
+                    break;
+                }
+                for j in 0.. {
+                    let mut m = DISPLAY_DEVICEW {
+                        cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+                        ..Default::default()
+                    };
+                    if !EnumDisplayDevicesW(PCWSTR(a.DeviceName.as_ptr()), j, &mut m, 0).as_bool() {
+                        break;
+                    }
+                    if wstr(&m.DeviceID).contains(LG_EDID) {
+                        out.push(wstr(&a.DeviceName));
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn wstr(w: &[u16]) -> String {
+        let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());
+        String::from_utf16_lossy(&w[..end])
     }
 
     pub fn apply_persisted_layout() -> Result<()> {

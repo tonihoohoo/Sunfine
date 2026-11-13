@@ -1,28 +1,38 @@
 # ultrafine-ctl
 
 Brightness hotkeys and automatic brightness (via the built-in ambient light
-sensor) for the LG UltraFine 5K display on Windows – macOS later.
+sensor) for the LG UltraFine 5K display on Windows.
 
-Status: protocol verified on macOS and Windows (see `docs/PROTOCOL.md`).
-First app version: tray icon, hotkeys, auto brightness from the display's
-sensor, Windows black-screen fix. Not yet tested on hardware.
+Status: protocol verified (see `docs/PROTOCOL.md`). App v0.2: tray icon,
+shortcuts, auto brightness, laptop sync, popup, black-screen fix. Not yet
+tested on hardware.
 
 ## Use
 
-Download the binary from the GitHub Actions run (or a release) and start it.
-A sun icon appears in the tray / menu bar:
+Download `ultrafine-ctl-windows-x64.exe` from the latest GitHub Actions run
+(Artifacts) or a release and start it. A sun icon appears in the tray:
 
-- **Brighter / Darker** – also `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown`
-- **Auto brightness** – `Ctrl+Alt+Home`; a manual change pauses auto mode
-  for 30 minutes
-- **Fix black screen on connect** (Windows) – if the LG stays black after
-  plugging in, the saved display layout is re-applied automatically
+- **Brighter / Darker** – default `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown`;
+  a popup like the Windows one, labelled "LG UltraFine", appears on the LG
+- **Auto brightness** – `Ctrl+Alt+Home`; uses the display's light sensor. A
+  manual change pauses it for 30 minutes
+- **Follow laptop screen** – on by default: while auto brightness is on,
+  the laptop's own adaptive brightness is on and the lid is open, the LG
+  follows the laptop panel. Brighter/Darker then sets the LG's offset to the
+  laptop (no pause), so the laptop's Fn+F5/F6 keys move both screens
+- **Shortcuts** – click an entry and press the new combination (Fn
+  combinations cannot be used; Windows handles them in the firmware)
+- **Fix black screen on connect** – if the LG stays black after plugging in,
+  the saved display layout is re-applied automatically
 
-Settings: `config.toml` in `%APPDATA%\ultrafine-ctl\` (Windows) or
-`~/Library/Application Support/ultrafine-ctl/` (macOS), written with defaults
-on first start (hotkeys, curve min/max level and lux range, fade time, pause).
+Settings live in `%APPDATA%\ultrafine-ctl\config.toml` (tray: "Open
+settings file"); curve min/max level and lux range, fade time and pause
+length are only there.
 
-Build: `cargo build --release` (Windows exe is a single static file).
+Windows may run a cloud security scan on first start: the exe is new and
+unsigned.
+
+Build: `cargo build --release` (single static exe).
 
 ## Windows: one-time setup for the light sensor
 

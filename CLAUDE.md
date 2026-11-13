@@ -1,7 +1,8 @@
 # ultrafine-ctl
 
 Brightness hotkeys + automatic brightness for the LG UltraFine 5K (1st gen,
-27MD5KA) on Windows, later macOS. The display has no buttons and Windows has no
+27MD5KA) on **Windows only** (user decision 2026-11-13: no macOS release; the
+code still builds on macOS because development happens on a Mac). The display has no buttons and Windows has no
 native brightness control for it.
 
 Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
@@ -11,7 +12,6 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 1. Windows tray app, single static `.exe`, **no separate DLLs**.
 2. Global hotkeys: brightness up/down, toggle auto mode (configurable).
 3. Auto brightness from the display's own ambient light sensor.
-4. Later: same binary logic on macOS (macOS does not auto-adjust this display).
 
 ## Stack (decided)
 
@@ -20,8 +20,8 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
   no DLL); on macOS default backend (static, IOKit)
 - `global-hotkey`, `tray-icon`, `tao` (event loop) – cross-platform
 - Config: TOML in the user config dir (`directories` crate)
-- CI: GitHub Actions builds `x86_64-pc-windows-msvc` (static CRT:
-  `-C target-feature=+crt-static`) and macOS; attach binaries to releases
+- CI: GitHub Actions builds `x86_64-pc-windows-msvc` only (static CRT:
+  `-C target-feature=+crt-static`); attach the exe to releases on `v*` tags
 
 ## Code layout
 
@@ -34,14 +34,22 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
   manual pause (unit-tested)
 - `src/config.rs` – TOML config with defaults + sanitizing
 - `src/display_fix.rs` – Windows black-screen detection/fix watchdog
-- CI: `.github/workflows/build.yml` (Windows x64 static + macOS arm64,
-  clippy -D warnings, tests, CRT dependency check, release on `v*` tags)
+- `src/laptop.rs` – Windows laptop panel state (WMI brightness, ADAPTBRIGHT
+  power setting, lid via internal display path)
+- `src/ui.rs` – softbuffer/tiny-skia/fontdue windows: brightness popup on
+  the LG (Win11 flyout look + "LG UltraFine") and the shortcut capture
+  window; `cargo test osd_preview` renders target/osd_preview.png;
+  `UF_DEMO_OSD=1` shows the popup at start
+- CI: `.github/workflows/build.yml` (Windows x64 static, clippy -D warnings,
+  tests, CRT dependency check, release on `v*` tags)
 - Dev check for Windows from macOS: `cargo check --target
   x86_64-pc-windows-msvc` (target installed)
 
-Not done yet: "Fix light sensor" button (UAC), laptop brightness sync,
-initial lux on start (sensor only reports changes), logging to file for the
-GUI build, macOS universal binary.
+Done in v0.2: laptop sync (option, calibration pair `sync_cal` updated by
+hotkeys while syncing), shortcut capture from the tray, brightness popup.
+Not done yet: "Fix light sensor" button (UAC), initial lux on start (sensor
+only reports changes), logging to file for the GUI build. Fn+F5/F6 cannot be
+hooked (handled by the laptop firmware); with sync on they move the LG too.
 
 ## Auto-brightness design
 
