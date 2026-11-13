@@ -34,7 +34,21 @@ pub struct Config {
     /// Windows: re-apply the saved display layout when the LG is connected
     /// but left black (persisted layout has it on, live layout does not).
     pub fix_black_screen: bool,
+    /// Windows: while auto mode is on, the laptop's own adaptive brightness
+    /// is on and the lid is open, make the LG follow the laptop panel.
+    pub sync_laptop: bool,
+    /// Show the brightness popup on manual changes.
+    pub osd: bool,
+    /// Pair (laptop panel %, LG level) that looked equal; set on the first
+    /// sync and whenever the user adjusts the LG while syncing.
+    pub sync_cal: Option<SyncCal>,
     pub hotkeys: Hotkeys,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct SyncCal {
+    pub panel: u8,
+    pub level: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,6 +73,9 @@ impl Default for Config {
             step_factor: 1.2,
             manual_pause_minutes: 30,
             fix_black_screen: true,
+            sync_laptop: true,
+            osd: true,
+            sync_cal: None,
             hotkeys: Hotkeys::default(),
         }
     }
@@ -136,6 +153,15 @@ mod tests {
     #[test]
     fn roundtrip_and_partial_file() {
         let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
+        let cfg = Config {
+            sync_cal: Some(SyncCal {
+                panel: 66,
+                level: 14307,
+            }),
+            ..Config::default()
+        };
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
 

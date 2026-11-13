@@ -6,14 +6,17 @@ use std::time::{Duration, Instant};
 
 use hidapi::HidApi;
 
-use crate::config::Config;
-use crate::curve::Controller;
+use crate::config::{Config, SyncCal};
+use crate::curve::{Controller, Mode};
 use crate::device::Display;
+use crate::laptop::Laptop;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Cmd {
     Step { up: bool },
     SetAuto(bool),
+    SetSync(bool),
+    Laptop(Option<Laptop>),
     Quit,
 }
 
@@ -24,7 +27,11 @@ pub struct Status {
     pub level: Option<u32>,
     pub lux: Option<f64>,
     pub auto: bool,
-    pub paused: bool,
+    pub mode: Mode,
+    pub laptop: Option<Laptop>,
+    pub sync_cal: Option<SyncCal>,
+    /// Increments on every applied manual change (popup trigger).
+    pub manual_seq: u64,
 }
 
 const READ_TIMEOUT_MS: i32 = 100;
@@ -45,25 +52,29 @@ pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
     let mut display: Option<Display> = None;
     let mut last_attempt: Option<Instant> = None;
     let mut last_status: Option<Status> = None;
-    let mut was_paused = false;
+    let mut last_mode = ctl.mode(Instant::now());
+    let mut manual_seq = 0u64;
 
     loop {
         let mut failed = false;
 
-        // 1. Commands from the UI.
+        // 1. Commands from the UI / laptop poller.
         loop {
+            let now = Instant::now();
             match rx.try_recv() {
                 Ok(Cmd::Quit) | Err(TryRecvError::Disconnected) => return,
-                Ok(Cmd::SetAuto(on)) => {
-                    ctl.set_auto(on);
-                    if let (Some(d), Some(t)) = (&display, ctl.auto_target(Instant::now())) {
+                Ok(Cmd::SetAuto(on)) => ctl.set_auto(on),
+                Ok(Cmd::SetSync(on)) => ctl.set_sync_enabled(on),
+                Ok(Cmd::Laptop(l)) => {
+                    if let (Some(d), Some(t)) = (&display, ctl.on_laptop(l)) {
                         apply(d, &mut ctl, t, transition, &mut failed);
                     }
                 }
                 Ok(Cmd::Step { up }) => {
-                    if let (Some(d), Some(t)) = (&display, ctl.on_step(up, Instant::now())) {
+                    if let (Some(d), Some(t)) = (&display, ctl.on_step(up, now)) {
                         // Hotkeys feel better with a short fade.
                         apply(d, &mut ctl, t, transition.min(250), &mut failed);
+                        manual_seq += 1;
                     }
                 }
                 Err(TryRecvError::Empty) => break,
@@ -82,6 +93,8 @@ pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
                         );
                         ctl.set_known_level(level);
                         display = Some(d);
+                        // Re-evaluate the mode target on (re)connect.
+                        last_mode = Mode::Manual;
                     }
                     Err(e) => log::warn!("display found but brightness read failed: {e:#}"),
                 },
@@ -90,7 +103,7 @@ pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
             }
         }
 
-        // 3. Sensor (blocks up to READ_TIMEOUT_MS) and pause expiry.
+        // 3. Sensor (blocks up to READ_TIMEOUT_MS) and mode changes.
         if let Some(d) = &display {
             match d.read_lux(READ_TIMEOUT_MS) {
                 Ok(Some(lux)) => {
@@ -104,14 +117,14 @@ pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
                     failed = true;
                 }
             }
-            let paused = ctl.paused(Instant::now());
-            if was_paused && !paused {
+            let mode = ctl.mode(Instant::now());
+            if mode != last_mode {
+                log::info!("mode {last_mode:?} -> {mode:?}");
                 if let Some(t) = ctl.auto_target(Instant::now()) {
-                    log::info!("manual pause over, back to auto");
                     apply(d, &mut ctl, t, transition, &mut failed);
                 }
+                last_mode = mode;
             }
-            was_paused = paused;
         } else {
             std::thread::sleep(Duration::from_millis(READ_TIMEOUT_MS as u64));
         }
@@ -122,13 +135,17 @@ pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
         }
 
         // 4. Tell the UI when something visible changed.
+        let now = Instant::now();
         let status = Status {
             connected: display.is_some(),
             light_sensor: display.as_ref().is_some_and(|d| d.has_light_sensor()),
             level: ctl.level(),
             lux: ctl.lux(),
             auto: ctl.auto(),
-            paused: ctl.paused(Instant::now()),
+            mode: ctl.mode(now),
+            laptop: ctl.laptop(),
+            sync_cal: ctl.cal(),
+            manual_seq,
         };
         if last_status.as_ref() != Some(&status) {
             notify(status.clone());
