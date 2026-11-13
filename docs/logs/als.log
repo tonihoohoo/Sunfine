@@ -1,0 +1,31 @@
+Reading ALS on 'USB Controls'. Ctrl+C to stop.
+(no report in 2 s)
+(no report in 2 s)
+09:02:59 event=0x0000 lux=    18  raw=00 00 12 00 00 00
+(no report in 2 s)
+(no report in 2 s)
+09:03:04 event=0x0000 lux=    16  raw=00 00 10 00 00 00
+09:03:04 event=0x0080 lux=     7  raw=80 00 07 00 00 00
+09:03:05 event=0x0080 lux=     0  raw=80 00 00 00 00 00
+(no report in 2 s)
+(no report in 2 s)
+(no report in 2 s)
+09:03:12 event=0x0000 lux=    16  raw=00 00 10 00 00 00
+(no report in 2 s)
+09:03:15 event=0x0000 lux=  2058  raw=00 00 0a 08 00 00
+09:03:15 event=0x0040 lux= 27028  raw=40 00 94 69 00 00
+09:03:16 event=0x0040 lux= 19179  raw=40 00 eb 4a 00 00
+09:03:16 event=0x0040 lux=  3786  raw=40 00 ca 0e 00 00
+09:03:16 event=0x0040 lux=  5351  raw=40 00 e7 14 00 00
+09:03:16 event=0x0040 lux=  3550  raw=40 00 de 0d 00 00
+09:03:16 event=0x0000 lux=  2291  raw=00 00 f3 08 00 00
+09:03:17 event=0x0040 lux= 17269  raw=40 00 75 43 00 00
+09:03:17 event=0x0040 lux= 23571  raw=40 00 13 5c 00 00
+09:03:17 event=0x0040 lux= 14944  raw=40 00 60 3a 00 00
+09:03:17 event=0x0040 lux= 13616  raw=40 00 30 35 00 00
+09:03:18 event=0x0040 lux= 15918  raw=40 00 2e 3e 00 00
+09:03:18 event=0x0040 lux= 20074  raw=40 00 6a 4e 00 00
+09:03:18 event=0x0040 lux= 19841  raw=40 00 81 4d 00 00
+09:03:18 event=0x0040 lux= 14624  raw=40 00 20 39 00 00
+09:03:18 event=0x0040 lux= 10143  raw=40 00 9f 27 00 00
+=== done ===

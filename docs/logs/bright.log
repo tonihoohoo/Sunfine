@@ -1,0 +1,25 @@
+raw=00 e3 37 00 00 00 00
+brightness=14307 (range 4..540)  transition=0 ms
+original=14307
+set level=2000 duration=0 ms -> sent 7 bytes
+raw=00 d0 07 00 00 00 00
+brightness=2000 (range 4..540)  transition=0 ms
+set level=40000 duration=1000 ms -> sent 7 bytes
+raw=00 40 9c 00 00 00 00
+brightness=40000 (range 4..540)  transition=0 ms
+set level=400 duration=0 ms -> sent 7 bytes
+raw=00 90 01 00 00 00 00
+brightness=400 (range 4..540)  transition=0 ms
+set level=54000 duration=0 ms -> sent 7 bytes
+raw=00 f0 d2 00 00 00 00
+brightness=54000 (range 4..540)  transition=0 ms
+set level=100 duration=0 ms -> sent 7 bytes
+raw=00 64 00 00 00 00 00
+brightness=100 (range 4..540)  transition=0 ms
+set level=60000 duration=0 ms -> sent 7 bytes
+raw=00 f0 d2 00 00 00 00
+brightness=54000 (range 4..540)  transition=0 ms
+set level=14307 duration=500 ms -> sent 7 bytes
+raw=00 e3 37 00 00 00 00
+brightness=14307 (range 4..540)  transition=0 ms
+=== done ===
