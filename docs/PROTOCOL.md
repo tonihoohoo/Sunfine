@@ -65,7 +65,9 @@ validated -> `uf_probe.py i2c-diag`.
   **not** a MAX44009 (its config/threshold regs are non-zero at reset).
 - **A 1-byte pointer write (0x03) to 0x4B got no response and the bridge
   stopped answering entirely**, also from a fresh process. Recovery: power
-  cycle the display. Pointer-write commands are now disabled by default.
+  cycle the display (verified: after unplugging power ~10 s the bridge
+  answered i2c-info again and brightness still worked). Pointer-write
+  commands are now disabled by default.
 - Conclusion so far: the ALS chip is not visible as a MAX44009 here; the
   display MCU that feeds HID iface 2 probably owns the sensor on another bus.
   I2C exploration paused (risk vs. yield). Probe:

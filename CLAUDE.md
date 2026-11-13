@@ -63,6 +63,9 @@ diagnostics (USB problem devices, LG devices, power settings, event logs,
 WinRT LightSensor, hidapi test), writes `win_diag_<timestamp>.log`.
 `tools/win_i2c_probe.cmd` runs the read-only iface 0 bridge probe
 (`uf_probe.py i2c-info` / `i2c-scan`), logs to `win_i2c_probe.log`.
+`tools/win_research.cmd` (read-only): DDC/CI capabilities via dxva2
+(`win_ddc.ps1`) + `uf_probe.py i2c-watch` (plain bridge reads, prints
+changes), logs to `win_research.log`.
 `tools/win_display_reset.cmd` tests programmatic fixes for the black-screen
 case (CDS_RESET mode set, SetDisplayConfig re-apply, injected
 Win+Ctrl+Shift+B), logs to `win_display_reset.log`.
