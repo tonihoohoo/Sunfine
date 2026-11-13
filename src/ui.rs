@@ -15,7 +15,7 @@ use tao::monitor::MonitorHandle;
 use tao::window::{Window, WindowBuilder, WindowId};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
-type Surface = softbuffer::Surface<Rc<Window>, Rc<Window>>;
+pub(crate) type Surface = softbuffer::Surface<Rc<Window>, Rc<Window>>;
 
 // ---------------------------------------------------------------- drawing
 
@@ -85,14 +85,14 @@ impl Painter {
     }
 }
 
-fn paint(rgb: [u8; 3]) -> Paint<'static> {
+pub(crate) fn paint(rgb: [u8; 3]) -> Paint<'static> {
     let mut p = Paint::default();
     p.set_color(Color::from_rgba8(rgb[0], rgb[1], rgb[2], 255));
     p.anti_alias = true;
     p
 }
 
-fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
+pub(crate) fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Path> {
     let r = r.min(w / 2.0).min(h / 2.0);
     let k = 0.552_284_8 * r;
     let mut pb = PathBuilder::new();
@@ -109,7 +109,7 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia::Pat
     pb.finish()
 }
 
-fn sun(pm: &mut Pixmap, cx: f32, cy: f32, s: f32, rgb: [u8; 3]) {
+pub(crate) fn sun(pm: &mut Pixmap, cx: f32, cy: f32, s: f32, rgb: [u8; 3]) {
     let p = paint(rgb);
     if let Some(c) = PathBuilder::from_circle(cx, cy, 4.5 * s) {
         pm.fill_path(&c, &p, FillRule::Winding, Transform::identity(), None);
@@ -130,13 +130,13 @@ fn sun(pm: &mut Pixmap, cx: f32, cy: f32, s: f32, rgb: [u8; 3]) {
     }
 }
 
-fn new_surface(window: &Rc<Window>) -> Result<Surface> {
+pub(crate) fn new_surface(window: &Rc<Window>) -> Result<Surface> {
     let ctx =
         softbuffer::Context::new(window.clone()).map_err(|e| anyhow!("softbuffer context: {e}"))?;
     softbuffer::Surface::new(&ctx, window.clone()).map_err(|e| anyhow!("softbuffer surface: {e}"))
 }
 
-fn present(surface: &mut Surface, pm: &Pixmap) -> Result<()> {
+pub(crate) fn present(surface: &mut Surface, pm: &Pixmap) -> Result<()> {
     let (w, h) = (pm.width(), pm.height());
     let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) else {
         return Ok(());
@@ -151,7 +151,7 @@ fn present(surface: &mut Surface, pm: &Pixmap) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn round_corners(window: &Window) {
+pub(crate) fn round_corners(window: &Window) {
     use tao::platform::windows::WindowExtWindows;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Dwm::{
@@ -170,7 +170,7 @@ fn round_corners(window: &Window) {
 }
 
 #[cfg(not(windows))]
-fn round_corners(_: &Window) {}
+pub(crate) fn round_corners(_: &Window) {}
 
 // ---------------------------------------------------------------- popup
 
