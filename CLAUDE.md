@@ -42,6 +42,8 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
   found on it (0x4A reads zeros; a pointer write to 0x4B hung the bridge).
   **Never write to that bus.** Proposed: laptop's own ALS via WinRT on
   Windows; display ALS on macOS.
+- Windows: DDC/CI brightness (VCP 0x10, 0-100) also works through the
+  standard monitor API (dxva2) – alternative to HID brightness, coarser.
 - Exact usable minimum brightness level (100 accepted; visual check needed).
 - Reconnect handling (display unplug / sleep).
 - Windows "USB device not recognized" on plug-in: a `VID_0000` device on the
@@ -63,9 +65,9 @@ diagnostics (USB problem devices, LG devices, power settings, event logs,
 WinRT LightSensor, hidapi test), writes `win_diag_<timestamp>.log`.
 `tools/win_i2c_probe.cmd` runs the read-only iface 0 bridge probe
 (`uf_probe.py i2c-info` / `i2c-scan`), logs to `win_i2c_probe.log`.
-`tools/win_research.cmd` (read-only): DDC/CI capabilities via dxva2
-(`win_ddc.ps1`) + `uf_probe.py i2c-watch` (plain bridge reads, prints
-changes), logs to `win_research.log`.
+`tools/win_research.cmd` (read-only): DDC/CI capabilities + VCP watch via
+dxva2 (`win_ddc.ps1 -WatchSeconds N`), logs to `win_research.log`.
+`uf_probe.py i2c-watch` does plain bridge reads and prints changes.
 `tools/win_display_reset.cmd` tests programmatic fixes for the black-screen
 case (CDS_RESET mode set, SetDisplayConfig re-apply, injected
 Win+Ctrl+Shift+B), logs to `win_display_reset.log`.

@@ -142,6 +142,26 @@ Log: `docs/logs/win_diag_20261113.log`.
   fixed it** (returned 0) -> DISPLAY2 5120x2880@60 attached, no admin.
   Detectable: GSM5B11 monitor present but not attached to desktop.
 
+## DDC/CI over the graphics path (Windows dxva2)
+
+`docs/logs/win_research_1.log` (2026-11-13), LG on `\\.\DISPLAY2`:
+
+- Capabilities: `prot(monitor)type(LCD)model(RTK)cmds(01 02 03 07 0C E3 F3)
+  vcp(02 04 05 06 08 0B 0C 10 12 14(...) 16 18 1A 52 60(...) 87 AC AE B2 B6 C6
+  C8 CA CC(...) D6(01 04 05) DF FD FF)mswhql(1)asset_eep(40)mccs_ver(2.2)`
+  -> Realtek scaler. **VCP 0x10 brightness works: 26/100** (HID showed
+  14307/54000 = 26.5 %, same setting). VCP 0xC9 = 778. Some listed codes
+  (0x12, 0x60, 0xDF) failed on first try (DDC/CI is flaky; retry).
+- The scaler's DDC/CI port is also visible on the bridge bus at 0x37: plain
+  reads alternate zeros and a buffered VCP reply
+  `6e 88 02 01 df 00 ff ff 03 0a 63` (reply to Get VCP 0xDF, result 01 =
+  unsupported).
+- `i2c-watch` (plain reads 0x37/0x4A/0x4B/0x6B while covering / lighting the
+  sensor): nothing light-dependent. 0x4A/0x4B always zeros, 0x6B constant
+  `ff fd ff fd ff fd 00 ...`.
+- Next: poll all listed + vendor VCP codes (0xE0-0xFF, caps lists FD, FF)
+  while changing light (`win_ddc.ps1 -WatchSeconds`).
+
 ## Raw HID report descriptors (from ioreg)
 
 Monitor:
