@@ -221,6 +221,9 @@ struct Menus {
     fix: CheckMenuItem,
     open_cfg: MenuItem,
     quit: MenuItem,
+    /// What the menu currently shows. Windows repaints an open menu on every
+    /// item change (visible flicker), so only changed items are touched.
+    shown: std::cell::RefCell<Option<MenuView>>,
 }
 
 impl Menus {
@@ -250,6 +253,7 @@ impl Menus {
             fix: CheckMenuItem::new("Fix black screen on connect", cfg!(windows), false, None),
             open_cfg: MenuItem::new("Open settings file", true, None),
             quit: MenuItem::new("Quit", true, None),
+            shown: std::cell::RefCell::new(None),
         };
         for (_, item) in &m.presets {
             m.brightness.append(item)?;
@@ -295,37 +299,87 @@ impl Menus {
 
     /// Brings every item in line with the settings and the device state.
     /// Also undoes the self-toggle of check items used as radio buttons.
+    /// After a click: check items toggled themselves, so re-apply all.
+    fn refresh(&self, cfg: &Config, s: Option<&Status>) {
+        self.shown.replace(None);
+        self.update(cfg, s);
+    }
+
+    /// Applies the view, touching only items whose state changed.
     fn update(&self, cfg: &Config, s: Option<&Status>) {
         let v = menu_view(cfg, s);
-        self.status.set_text(&v.status);
-        self.brightness.set_enabled(v.connected);
-        self.brightness.set_text(&v.brightness);
-        for (p, item) in &self.presets {
-            item.set_checked(Some(*p) == v.preset);
+        let old = self.shown.borrow().clone();
+        if old.as_ref() == Some(&v) {
+            return;
         }
-        self.up.set_text(&v.up);
-        self.down.set_text(&v.down);
-        self.up.set_enabled(v.connected);
-        self.down.set_enabled(v.connected);
-        self.mode_manual.set_checked(v.mode == ModeView::Manual);
-        self.mode_sensor
-            .set_checked(v.mode == ModeView::LightSensor);
-        self.mode_follow
-            .set_checked(v.mode == ModeView::FollowLaptop);
-        self.mode_follow.set_enabled(v.follow_enabled);
-        self.mode_follow.set_text(&v.follow);
-        self.sensor.set_enabled(v.sensor_enabled);
-        self.sensor.set_text(&v.sensor);
-        self.sensor_lg.set_checked(!v.sensor_laptop);
-        self.sensor_laptop.set_checked(v.sensor_laptop);
-        self.sensor_laptop.set_enabled(v.sensor_laptop_enabled);
-        self.sensor_laptop.set_text(&v.sensor_laptop_text);
-        self.curve.set_enabled(v.curve_enabled);
-        self.sc_up.set_text(&v.shortcuts[0]);
-        self.sc_down.set_text(&v.shortcuts[1]);
-        self.sc_auto.set_text(&v.shortcuts[2]);
-        self.osd.set_checked(cfg.osd);
-        self.fix.set_checked(cfg.fix_black_screen);
+        // `ch(f)`: field differs from what is shown (or nothing shown yet).
+        let ch = |f: &dyn Fn(&MenuView) -> bool| old.as_ref().is_none_or(f);
+        if ch(&|o| o.status != v.status) {
+            self.status.set_text(&v.status);
+        }
+        if ch(&|o| o.connected != v.connected) {
+            self.brightness.set_enabled(v.connected);
+            self.up.set_enabled(v.connected);
+            self.down.set_enabled(v.connected);
+        }
+        if ch(&|o| o.brightness != v.brightness) {
+            self.brightness.set_text(&v.brightness);
+        }
+        if ch(&|o| o.preset != v.preset) {
+            for (p, item) in &self.presets {
+                item.set_checked(Some(*p) == v.preset);
+            }
+        }
+        if ch(&|o| o.up != v.up) {
+            self.up.set_text(&v.up);
+        }
+        if ch(&|o| o.down != v.down) {
+            self.down.set_text(&v.down);
+        }
+        if ch(&|o| o.mode != v.mode) {
+            self.mode_manual.set_checked(v.mode == ModeView::Manual);
+            self.mode_sensor
+                .set_checked(v.mode == ModeView::LightSensor);
+            self.mode_follow
+                .set_checked(v.mode == ModeView::FollowLaptop);
+        }
+        if ch(&|o| o.follow_enabled != v.follow_enabled) {
+            self.mode_follow.set_enabled(v.follow_enabled);
+        }
+        if ch(&|o| o.follow != v.follow) {
+            self.mode_follow.set_text(&v.follow);
+        }
+        if ch(&|o| o.sensor_enabled != v.sensor_enabled) {
+            self.sensor.set_enabled(v.sensor_enabled);
+        }
+        if ch(&|o| o.sensor != v.sensor) {
+            self.sensor.set_text(&v.sensor);
+        }
+        if ch(&|o| o.sensor_laptop != v.sensor_laptop) {
+            self.sensor_lg.set_checked(!v.sensor_laptop);
+            self.sensor_laptop.set_checked(v.sensor_laptop);
+        }
+        if ch(&|o| o.sensor_laptop_enabled != v.sensor_laptop_enabled) {
+            self.sensor_laptop.set_enabled(v.sensor_laptop_enabled);
+        }
+        if ch(&|o| o.sensor_laptop_text != v.sensor_laptop_text) {
+            self.sensor_laptop.set_text(&v.sensor_laptop_text);
+        }
+        if ch(&|o| o.curve_enabled != v.curve_enabled) {
+            self.curve.set_enabled(v.curve_enabled);
+        }
+        if ch(&|o| o.shortcuts != v.shortcuts) {
+            self.sc_up.set_text(&v.shortcuts[0]);
+            self.sc_down.set_text(&v.shortcuts[1]);
+            self.sc_auto.set_text(&v.shortcuts[2]);
+        }
+        if ch(&|o| o.osd != v.osd) {
+            self.osd.set_checked(v.osd);
+        }
+        if ch(&|o| o.fix != v.fix) {
+            self.fix.set_checked(v.fix);
+        }
+        self.shown.replace(Some(v));
     }
 }
 
@@ -356,6 +410,8 @@ struct MenuView {
     sensor_laptop_enabled: bool,
     curve_enabled: bool,
     shortcuts: [String; 3],
+    osd: bool,
+    fix: bool,
 }
 
 fn menu_view(cfg: &Config, s: Option<&Status>) -> MenuView {
@@ -428,6 +484,8 @@ fn menu_view(cfg: &Config, s: Option<&Status>) -> MenuView {
             format!("Darker: {}…", cfg.hotkeys.down),
             format!("Automatic on/off: {}…", cfg.hotkeys.toggle_auto),
         ],
+        osd: cfg.osd,
+        fix: cfg.fix_black_screen,
     }
 }
 
@@ -514,6 +572,7 @@ fn run() -> Result<()> {
     // Config writes are batched (learning can change the curve often).
     let mut save_at: Option<Instant> = None;
     let mut next_file_check = Instant::now() + Duration::from_secs(2);
+    let mut tooltip = String::new();
 
     event_loop.run(move |event, target, control_flow| {
         let send = |c: Cmd| {
@@ -642,7 +701,7 @@ fn run() -> Result<()> {
                     *control_flow = ControlFlow::Exit;
                     return;
                 }
-                menus.update(&cfg, last_status.as_ref());
+                menus.refresh(&cfg, last_status.as_ref());
             }
             Event::UserEvent(UserEvent::HotKey(e)) if e.state == HotKeyState::Pressed => {
                 match shortcuts.action(e.id) {
@@ -658,7 +717,12 @@ fn run() -> Result<()> {
             }
             Event::UserEvent(UserEvent::Status(s)) => {
                 if let Some(t) = &tray {
-                    let _ = t.set_tooltip(Some(&status_text(&s)));
+                    // Only on change: a tooltip refresh flickers while it is shown.
+                    let text = status_text(&s);
+                    if text != tooltip {
+                        let _ = t.set_tooltip(Some(&text));
+                        tooltip = text;
+                    }
                 }
                 // The worker learns (sync offset, curve points): persist.
                 if s.sync_cal != cfg.sync_cal || s.curve != cfg.curve {
@@ -1134,4 +1198,18 @@ mod tests {
         assert_eq!(spec_of(&cfg, Action::Down), "ctrl+F2");
         assert_eq!(spec_of(&cfg, Action::ToggleAuto), "ctrl+F3");
     }
+
+    #[test]
+    fn menu_view_is_stable_under_small_changes() {
+        // Flicker fix: tiny lux / laptop-lux changes must not change what
+        // the menu shows (no item would need repainting).
+        let cfg = Config { auto: true, auto_mode: AutoMode::LightSensor, ..Config::default() };
+        let mut a = status(Mode::LightSensor, lid(true, Some(10.0)), 15556);
+        let mut b = a.clone();
+        a.lux = Some(18.2);
+        b.lux = Some(18.4);
+        b.laptop = lid(true, Some(11.0));
+        assert_eq!(menu_view(&cfg, Some(&a)), menu_view(&cfg, Some(&b)));
+    }
 }
+
