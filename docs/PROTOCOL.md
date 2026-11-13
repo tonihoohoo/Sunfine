@@ -182,6 +182,25 @@ Caveats: the setting is per device instance (another port may need it
 again); Windows Update could restore the sensor driver. Revert: pick "HID
 Ambient Light Sensor" again or uninstall + scan for hardware changes.
 
+## Windows state checks and laptop brightness (win_check, 2026-11-13)
+
+`docs/logs/win_check_1.log`, normal (working) state:
+
+- Display: LG active in both live and persisted (`QDC_DATABASE_CURRENT`,
+  topology 4 = extend) config -> verdict OK. The FAULT branch (persisted
+  active, live inactive) is still unverified – run `win_check` while black.
+- Sensor: MI_02 on `input.inf`, status OK -> readable.
+- Laptop panel (AUO499A): `WmiMonitorBrightness` 66 %, 101 levels, readable
+  without admin. ADAPTBRIGHT = 1 (AC and DC). Laptop ALS ~10 lux where the
+  LG ALS reads ~16-19 lux (different placement / calibration).
+- Windows adaptive brightness behaviour (60 s, covering / uncovering):
+  **relative to the user's slider** – 66 % in room light, dropped to 51 %
+  ~3 s after covering, came back to 66 % only after ~1-15 s of light again
+  (hysteresis / slow ramp). Range seen 51-66 %.
+- LG ALS reacts within a second (0 when covered, 15-19 room light).
+- LG brightness meanwhile 14307/54000 (26.5 %). Level may be centi-nits
+  (descriptor said 4..540, LG 5K is ~500 nits) – unverified.
+
 ## Raw HID report descriptors (from ioreg)
 
 Monitor:
