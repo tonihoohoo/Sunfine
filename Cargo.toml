@@ -1,0 +1,36 @@
+[package]
+name = "ultrafine-ctl"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+resolver = "3"
+description = "Brightness hotkeys and automatic brightness for the LG UltraFine 5K"
+license = "MIT"
+publish = false
+
+[dependencies]
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+directories = "6"
+global-hotkey = "0.10"
+tray-icon = "0.26"
+tao = "0.37"
+
+[target.'cfg(windows)'.dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Devices_Display",
+    "Win32_Graphics_Gdi",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+hidapi = "2.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

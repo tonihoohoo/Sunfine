@@ -1,0 +1,59 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: ultrafine-ctl.exe
+            asset: ultrafine-ctl-windows-x64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: ultrafine-ctl
+            asset: ultrafine-ctl-macos-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked --target ${{ matrix.target }} -- -D warnings
+      - run: cargo test --locked --target ${{ matrix.target }}
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Check the exe has no C runtime DLL dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object FullName -match 'Hostx64\\x64' | Select-Object -First 1
+          $deps = & $dumpbin.FullName /dependents target\${{ matrix.target }}\release\${{ matrix.bin }}
+          $deps
+          if ($deps -match 'VCRUNTIME|MSVCP|api-ms-win-crt') { throw "dynamic CRT dependency found" }
+      - name: Stage binary
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/${{ matrix.bin }} ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.asset }}

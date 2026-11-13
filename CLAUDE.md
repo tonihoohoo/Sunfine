@@ -23,6 +23,26 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 - CI: GitHub Actions builds `x86_64-pc-windows-msvc` (static CRT:
   `-C target-feature=+crt-static`) and macOS; attach binaries to releases
 
+## Code layout
+
+- `src/main.rs` – tao event loop, tray menu, global hotkeys, wiring
+- `src/worker.rs` – device thread: HID handles, reconnect (2 s), sensor
+  reads (100 ms timeout), applies controller decisions, sends `Status`
+- `src/device.rs` – HID protocol (brightness iface 1, ALS iface 2; never
+  opens iface 0)
+- `src/curve.rs` – pure policy: log lux curve, EMA, threshold, hotkey step,
+  manual pause (unit-tested)
+- `src/config.rs` – TOML config with defaults + sanitizing
+- `src/display_fix.rs` – Windows black-screen detection/fix watchdog
+- CI: `.github/workflows/build.yml` (Windows x64 static + macOS arm64,
+  clippy -D warnings, tests, CRT dependency check, release on `v*` tags)
+- Dev check for Windows from macOS: `cargo check --target
+  x86_64-pc-windows-msvc` (target installed)
+
+Not done yet: "Fix light sensor" button (UAC), laptop brightness sync,
+initial lux on start (sensor only reports changes), logging to file for the
+GUI build, macOS universal binary.
+
 ## Auto-brightness design
 
 - Windows: when the laptop's own adaptive brightness is on, keep the LG in
