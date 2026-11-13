@@ -36,8 +36,10 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 
 - Windows ALS: **confirmed** the sensor class driver owns iface 2 and the
   device is in Error state – hidapi cannot see it and WinRT `LightSensor`
-  does not list it (only the laptop's own sensor). Next: find the device's
-  problem code; alternative path: iface 0 "HID I2C" (unexplored).
+  does not list it (only the laptop's own sensor). Cause: Microsoft's HID
+  sensor driver fails to start on LG's descriptor (code 10). Options: laptop's
+  own ALS via WinRT as fallback; iface 0 "HID I2C" (unexplored – read-only
+  probing only, writes could hit firmware/EEPROM).
 - Exact usable minimum brightness level (100 accepted; visual check needed).
 - Reconnect handling (display unplug / sleep).
 - Windows "USB device not recognized" on plug-in: a `VID_0000` device on the

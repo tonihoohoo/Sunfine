@@ -60,7 +60,11 @@ Log: `docs/logs/win_diag_20261113.log`.
   "HID Ambient Light Sensor" in class Sensor with status **Error**. hidapi does
   not list usage page 0x20 at all, and WinRT `LightSensor` lists only the
   laptop's own sensor (8087:0AC2). So neither planned path reads it as-is.
-  Problem code of the LG sensor device not yet known.
+  Driver: Microsoft `sensorshidclassdriver.inf` (UMDF, WUDFRd), problem code
+  **10** (failed start), status 0xC0000463, description "Failed to initialize
+  sensor from HID ...". Most likely the descriptor lacks properties the
+  Windows HID sensor driver requires (sensor/reporting/power state etc.) –
+  the sensor was built for macOS. Not fixable without admin (driver swap).
 - iface 0 product string is **"HID I2C"**, iface 1 "HID BRIGHTNESS" – iface 0
   may be an I2C passthrough (possible alternative ALS path, unexplored).
 - "USB device not recognized" = `USB\VID_0000&PID_0002` (descriptor request
