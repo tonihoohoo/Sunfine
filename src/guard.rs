@@ -36,6 +36,7 @@ pub struct Guarded<D> {
     jobs: Sender<Job<D>>,
     has_sensor: bool,
     timeout: Duration,
+    busy: Busy,
 }
 
 impl<D: Device + Send + 'static> Guarded<D> {
@@ -47,15 +48,14 @@ impl<D: Device + Send + 'static> Guarded<D> {
             .spawn(move || {
                 // Ends when the Guarded is dropped (after a late call returns).
                 for job in rx {
-                    busy.0.store(true, Ordering::SeqCst);
                     job(&dev);
-                    busy.0.store(false, Ordering::SeqCst);
                 }
             })?;
         Ok(Self {
             jobs,
             has_sensor,
             timeout,
+            busy,
         })
     }
 
@@ -66,9 +66,16 @@ impl<D: Device + Send + 'static> Guarded<D> {
         f: impl FnOnce(&D) -> R + Send + 'static,
     ) -> Result<R> {
         let (tx, rx) = channel();
+        let busy = self.busy.clone();
         self.jobs
             .send(Box::new(move |d| {
-                let _ = tx.send(f(d));
+                busy.0.store(true, Ordering::SeqCst);
+                let r = f(d);
+                // Cleared before the answer is sent, so a caller that got its
+                // answer never sees the flag still set (it once flickered on
+                // between calls and showed "not responding" for a moment).
+                busy.0.store(false, Ordering::SeqCst);
+                let _ = tx.send(r);
             }))
             .map_err(|_| anyhow!("display thread ended"))?;
         let limit = self.timeout + extra;
@@ -172,6 +179,41 @@ where
         match self.inner.open()? {
             Some(d) => Ok(Some(Guarded::new(d, self.timeout, self.busy.clone())?)),
             None => Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Quick;
+
+    impl Device for Quick {
+        fn has_light_sensor(&self) -> bool {
+            false
+        }
+        fn brightness(&self) -> Result<u32> {
+            Ok(1000)
+        }
+        fn set_brightness(&self, _level: u32, _transition_ms: u16) -> Result<()> {
+            Ok(())
+        }
+        fn read_lux(&self, _timeout_ms: i32) -> Result<Option<u32>> {
+            Ok(None)
+        }
+        fn initial_lux(&self) -> Option<u32> {
+            None
+        }
+    }
+
+    #[test]
+    fn busy_is_clear_whenever_a_call_has_answered() {
+        let busy = Busy::default();
+        let g = Guarded::new(Quick, Duration::from_secs(10), busy.clone()).unwrap();
+        for _ in 0..10_000 {
+            assert_eq!(g.brightness().unwrap(), 1000);
+            assert!(!busy.get(), "flag still set after an answered call");
         }
     }
 }
