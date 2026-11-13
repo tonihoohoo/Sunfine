@@ -159,8 +159,19 @@ Log: `docs/logs/win_diag_20261113.log`.
 - `i2c-watch` (plain reads 0x37/0x4A/0x4B/0x6B while covering / lighting the
   sensor): nothing light-dependent. 0x4A/0x4B always zeros, 0x6B constant
   `ff fd ff fd ff fd 00 ...`.
-- Next: poll all listed + vendor VCP codes (0xE0-0xFF, caps lists FD, FF)
-  while changing light (`win_ddc.ps1 -WatchSeconds`).
+- Full VCP sweep + 40 s watch while covering / lighting
+  (`docs/logs/win_research_2.log`): only 0x02 (1/2), 0x10 (26/100), 0xC9
+  (778) and vendor 0xFB (1/2) answer; FD/FF and most listed codes fail.
+  Nothing changed with light -> **no ALS over DDC/CI**.
+
+### Windows ALS – conclusion (2026-11-13)
+
+Every no-admin path to the display's own sensor is closed: HID iface 2 is
+held by a failing Microsoft sensor driver (code 10), WinRT does not list it,
+the I2C bridge shows no light-dependent device with plain reads, DDC/CI has
+no lux value. Remaining: laptop's own ALS (WinRT), or a one-time manual
+driver swap for the MI_02 collection to a plain HID driver (needs admin –
+not pursued per user decision).
 
 ## Raw HID report descriptors (from ioreg)
 
