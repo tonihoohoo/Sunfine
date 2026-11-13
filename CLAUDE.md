@@ -34,20 +34,21 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 
 ## Open questions / risks
 
-- Windows: the HID sensor class driver may own the ALS collection. If hidapi
-  cannot read iface 2, fall back to `Windows.Devices.Sensors.LightSensor`
-  via the `windows` crate.
+- Windows ALS: **confirmed** the sensor class driver owns iface 2 and the
+  device is in Error state – hidapi cannot see it and WinRT `LightSensor`
+  does not list it (only the laptop's own sensor). Next: find the device's
+  problem code; alternative path: iface 0 "HID I2C" (unexplored).
 - Exact usable minimum brightness level (100 accepted; visual check needed).
 - Reconnect handling (display unplug / sleep).
-- Windows often shows "USB device not recognized" when the display is plugged
-  in (needs several replugs). Root cause is below the app (firmware /
-  Thunderbolt / power management). **No automation that needs admin rights**
+- Windows "USB device not recognized" on plug-in: a `VID_0000` device on the
+  laptop's own xHCI, probably harmless (all LG functions enumerate). **No automation that needs admin rights**
   (user decision) – the app only re-opens the HID device when it reappears.
-- Windows: display often stays **black** after plug-in although Windows sees
-  it as active; Win+Ctrl+Shift+B fixes it. Idea: tray item / hotkey "Reset
-  display" (optionally auto-run when the LG HID device appears), no admin –
-  e.g. `SetDisplayConfig` re-apply or synthesized Win+Ctrl+Shift+B.
-  Not yet verified that either works like the real key combo.
+- Windows: display often stays **black** after plug-in. Verified fix, no
+  admin: `SetDisplayConfig(SDC_APPLY | SDC_USE_DATABASE_CURRENT)`. Plan:
+  on display change / LG HID arrival, if a `GSM5B11` monitor is enumerated
+  but not attached to the desktop, re-apply (configurable, on by default; a
+  user who deliberately disabled the LG display turns it off). Also a tray
+  item "Reset display". See `docs/PROTOCOL.md` (Windows).
 
 ## Tools
 

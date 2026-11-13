@@ -71,6 +71,13 @@ Log: `docs/logs/win_diag_20261113.log`.
   the LG monitor (GSM5B11) as active, **but the screen was black**. The fault
   is on the DisplayPort/graphics side, not USB/HID.
   **Win+Ctrl+Shift+B (graphics driver reset) brought the picture back.**
+  `win_display_reset` test (2026-11-13): in the black state the LG monitor
+  (`MONITOR\GSM5B11`) is enumerated on `\\.\DISPLAY2..4` (tiled 5K) but
+  **none is attached to the desktop** ("no current mode"; WMI `active=True` is
+  misleading). `ChangeDisplaySettingsEx(CDS_RESET)` cannot help (no mode).
+  **`SetDisplayConfig(0,NULL,0,NULL, SDC_APPLY|SDC_USE_DATABASE_CURRENT)`
+  fixed it** (returned 0) -> DISPLAY2 5120x2880@60 attached, no admin.
+  Detectable: GSM5B11 monitor present but not attached to desktop.
 
 ## Raw HID report descriptors (from ioreg)
 
