@@ -37,6 +37,9 @@ The popup and windows follow the Windows light/dark setting and accent
 colour. Changes are smoothed (about 2 s) so the brightness glides instead of
 jumping.
 
+Only one copy runs at a time: starting a new version closes the old one
+(versions before 0.6 must be quit from the tray menu once).
+
 Settings: `%APPDATA%\ultrafine-ctl\config.toml`. Editing it while the app
 runs is fine – the app picks up the change. If the file has an error the app
 uses defaults and does not overwrite it.
