@@ -11,6 +11,7 @@ LG UltraFine HID probe (macOS / Windows / Linux, via hidapi).
     python3 uf_probe.py i2c-scan [--init]   # iface 0 bridge: I2C bus scan (reads only)
     python3 uf_probe.py i2c-regs <addr> <reg> <n>  # read n registers (pointer write + read)
     python3 uf_probe.py i2c-lux [seconds]   # MAX44009-style lux at 0x4A and 0x4B
+    python3 uf_probe.py i2c-diag            # validate read path on known devices
 
 Iface 0 ("HID I2C") is an NXP LPCUSBSIO USB-HID to I2C bridge (LG Screen
 Manager talks DDC/CI and firmware update through it). Protocol from NXP
@@ -165,6 +166,7 @@ def poll(interval=0.5, size=64):
 
 # --- NXP LPCUSBSIO bridge on iface 0 -------------------------------------
 SIO_REQ_INIT_PORT = 0x01
+SIO_REQ_DEVICE_WRITE = 0x03
 SIO_REQ_DEVICE_READ = 0x04
 SIO_REQ_DEVICE_XFER = 0x05
 SIO_REQ_DEV_INFO = 0xF0
@@ -255,7 +257,13 @@ def i2c_read_regs(b, addr, reg, n, port=0, verbose=False):
     resp, data = b.request(SIO_REQ_DEVICE_XFER, port, params, timeout=0.5, verbose=verbose)
     if resp != 0:
         return None, resp, data
-    return data[4:4 + n], resp, data
+    return rx_payload(data, n), resp, data
+
+
+def rx_payload(data, n):
+    """Observed (Windows, 2026-11-13): OK responses carry just the n read
+    bytes. NXP reference echoes 4 param bytes first - handle both."""
+    return data[:n] if len(data) == n else data[4:4 + n]
 
 
 def i2c_regs(addr, reg, n):
@@ -302,6 +310,49 @@ def i2c_lux(seconds=30, addrs=(0x4A, 0x4B)):
         b.close()
 
 
+
+def i2c_diag():
+    """Validate the bridge read path on devices with known content.
+    Bus writes: only single register-pointer bytes (no register is changed)."""
+    b = SioBridge()
+    o = I2C_OPT_START | I2C_OPT_STOP
+
+    def rd(addr, n, note):
+        print(f"\n# DEVICE_READ 0x{addr:02x} n={n}  ({note})")
+        resp, data = b.request(SIO_REQ_DEVICE_READ, 0,
+                               struct.pack("<HBB", n, o | I2C_OPT_NACK_LAST, addr), verbose=True)
+        print(f"  {SIO_RES.get(resp, resp)}  data={data.hex(' ')}")
+
+    def ptr(addr, reg, note):
+        print(f"\n# DEVICE_WRITE pointer 0x{addr:02x} <- 0x{reg:02x}  ({note})")
+        resp, data = b.request(SIO_REQ_DEVICE_WRITE, 0,
+                               struct.pack("<HBB", 1, o, addr) + bytes([reg]), verbose=True)
+        print(f"  {SIO_RES.get(resp, resp)}  data={data.hex(' ')}")
+
+    def xf(addr, reg, n, opts, note):
+        print(f"\n# DEVICE_XFER 0x{addr:02x} reg 0x{reg:02x} n={n} opts=0x{opts:02x}  ({note})")
+        resp, data = b.request(SIO_REQ_DEVICE_XFER, 0,
+                               struct.pack("<BBBB", 1, n, opts, addr) + bytes([reg]), verbose=True)
+        print(f"  {SIO_RES.get(resp, resp)}  data={data.hex(' ')}")
+
+    try:
+        resp, data = b.request(SIO_REQ_INIT_PORT, 0, struct.pack("<II", 100000, 0), verbose=True)
+        print(f"INIT_PORT: {SIO_RES.get(resp, resp)} {data!r}")
+        rd(0x37, 6, "DDC/CI: idle read should give 6e 80 be or similar, not zeros")
+        rd(0x54, 8, "EEPROM: current address, likely non-zero")
+        xf(0x54, 0x00, 8, 0, "EEPROM from offset 0")
+        rd(0x4A, 8, "ALS? current pointer")
+        rd(0x4B, 8, "ALS? current pointer")
+        for a in (0x4A, 0x4B):
+            ptr(a, 0x03, "MAX44009 lux high register")
+            rd(a, 2, "lux high/low after pointer write")
+            xf(a, 0x03, 2, 0, "lux via XFER opts 0")
+            xf(a, 0x03, 2, 0x02, "lux via XFER opts 2 (ack last)")
+        rd(0x6B, 4, "unknown device")
+    finally:
+        b.close()
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
     if cmd == "set":
@@ -314,6 +365,8 @@ if __name__ == "__main__":
         i2c_scan(init="--init" in args, port=port)
     elif cmd == "i2c-regs":
         i2c_regs(int(sys.argv[2], 0), int(sys.argv[3], 0), int(sys.argv[4], 0))
+    elif cmd == "i2c-diag":
+        i2c_diag()
     elif cmd == "i2c-lux":
         i2c_lux(float(sys.argv[2]) if len(sys.argv) > 2 else 30)
     elif cmd == "als":
