@@ -15,7 +15,7 @@ that adds:
 - an editable brightness curve that learns from your manual adjustments
 - a fix for the LG staying black after it is plugged in
 
-Current version: 0.7 (formerly `ultrafine-ctl`). The USB protocol was reverse-engineered and is
+Current version: 0.8 (formerly `ultrafine-ctl`). The USB protocol was reverse-engineered and is
 documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 > Not affiliated with or endorsed by LG Electronics or Apple. Use at your own

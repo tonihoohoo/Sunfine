@@ -88,13 +88,13 @@ our smoothing (1 % threshold, 300 ms fade, poll 150 ms); brightness writes
 throttled to one per 150 ms, latest wins (`Writer` in worker.rs) – a burst
 of writes while dragging curve points once left the display unresponsive
 until power cycled.
-Stuck display guards (after v0.7): every display call has a 2 s deadline
+v0.8: stuck display guards: every display call has a 2 s deadline
 (`guard.rs`), so a display that stops answering no longer freezes hotkeys /
 tray; the tray says "not responding (power cycle the display)" and the app
 does not reopen until the stuck call returns. Manual changes are read back;
 a mismatch is re-checked after the fade, resent once without a fade, and if
 the display still ignores it the handles are reopened (level re-read).
-v0.7 rename: the app is **Sunfine** (crate/exe `sunfine`, release asset
+v0.8 rename: the app is **Sunfine** (crate/exe `sunfine`, release asset
 `sunfine-windows-x64.exe`, settings `%APPDATA%\Sunfine\config\config.toml`,
 log `sunfine.log`, single-instance names `Local\sunfine[-quit]`). On first
 start the old `%APPDATA%\ultrafine-ctl\config\config.toml` is copied over
