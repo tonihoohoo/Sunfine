@@ -12,6 +12,7 @@ LG UltraFine HID probe (macOS / Windows / Linux, via hidapi).
     python3 uf_probe.py i2c-regs <addr> <reg> <n>  # read n registers (pointer write + read)
     python3 uf_probe.py i2c-lux [seconds]   # MAX44009-style lux at 0x4A and 0x4B
     python3 uf_probe.py i2c-diag            # validate read path on known devices
+    python3 uf_probe.py i2c-watch [seconds] # plain reads, print changes (find the ALS)
 
 Iface 0 ("HID I2C") is an NXP LPCUSBSIO USB-HID to I2C bridge (LG Screen
 Manager talks DDC/CI and firmware update through it). Protocol from NXP
@@ -348,6 +349,34 @@ def i2c_diag():
         b.close()
 
 
+
+def i2c_watch(seconds=30, addrs=(0x37, 0x4A, 0x4B, 0x6B), n=16):
+    """Plain DEVICE_READs only (no pointer writes). Prints a line whenever the
+    bytes read from an address change - look for one that follows the light.
+    Stops at the first missing response so a stuck bridge is not hammered."""
+    b = SioBridge()
+    rd_opts = I2C_OPT_START | I2C_OPT_STOP | I2C_OPT_NACK_LAST
+    last = {}
+    print(f"Watching {', '.join(f'0x{a:02x}' for a in addrs)} for {seconds} s "
+          "(plain reads). Cover the top bezel ~5 s, then shine a light.", flush=True)
+    try:
+        end = time.time() + seconds
+        while time.time() < end:
+            for a in addrs:
+                resp, data = b.request(SIO_REQ_DEVICE_READ, 0, struct.pack("<HBB", n, rd_opts, a), timeout=0.5)
+                if resp is None:
+                    print(f"0x{a:02x}: no response - stopping (bridge stuck? power cycle the display)")
+                    return
+                val = rx_payload(data, n).hex(" ") if resp == 0 else SIO_RES.get(resp, str(resp))
+                if last.get(a) != val:
+                    print(f"{time.strftime('%H:%M:%S')} 0x{a:02x}: {val}", flush=True)
+                    last[a] = val
+            time.sleep(0.5)
+        print("done")
+    finally:
+        b.close()
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "list"
     if cmd == "set":
@@ -363,6 +392,8 @@ if __name__ == "__main__":
                  "2026-11-13 (see docs/PROTOCOL.md). Add --i-know to run anyway.")
     elif cmd == "i2c-regs":
         i2c_regs(int(sys.argv[2], 0), int(sys.argv[3], 0), int(sys.argv[4], 0))
+    elif cmd == "i2c-watch":
+        i2c_watch(float(sys.argv[2]) if len(sys.argv) > 2 else 30)
     elif cmd == "i2c-diag":
         i2c_diag()
     elif cmd == "i2c-lux":
