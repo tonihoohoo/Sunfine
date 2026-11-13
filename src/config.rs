@@ -10,14 +10,15 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct Config {
-    /// Automatic brightness from the display's light sensor.
+    /// Automatic brightness on (see `auto_mode`); off = manual.
     pub auto: bool,
     /// Fade time the display uses for each change, ms.
     pub transition_ms: u16,
-    /// Exponential moving average factor for lux (0..1, higher = faster).
-    pub ema_alpha: f64,
-    /// Auto mode only applies a new level if it differs by more than this
-    /// many percentage points.
+    /// Light-level smoothing time constant in seconds (higher = calmer).
+    pub smoothing_seconds: f64,
+    /// While the light level is changing, auto mode only sends a new level
+    /// if it differs from the current one by more than this many percent
+    /// (relative). Once the light is steady a smaller step is used.
     pub apply_threshold_percent: f64,
     /// Each hotkey press multiplies / divides the level by this factor.
     pub step_factor: f64,
@@ -94,10 +95,11 @@ pub fn default_curve() -> Vec<CurvePoint> {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            auto: true,
+            // Manual by default; the last choice is saved and restored.
+            auto: false,
             transition_ms: 800,
-            ema_alpha: 0.3,
-            apply_threshold_percent: 3.0,
+            smoothing_seconds: 2.0,
+            apply_threshold_percent: 12.0,
             step_factor: 1.2,
             fix_black_screen: true,
             auto_mode: AutoMode::FollowLaptop,
@@ -129,22 +131,39 @@ impl Config {
 
     /// Loads the config, writing the defaults on first run.
     pub fn load_or_create() -> Result<Self> {
+        match Self::load()? {
+            Some(cfg) => Ok(cfg),
+            None => {
+                let cfg = Self::default();
+                if let Some(path) = Self::path() {
+                    cfg.save()
+                        .with_context(|| format!("writing {}", path.display()))?;
+                    log::info!("wrote default config to {}", path.display());
+                }
+                Ok(cfg)
+            }
+        }
+    }
+
+    /// Reads the file; `Ok(None)` if it does not exist.
+    pub fn load() -> Result<Option<Self>> {
         let Some(path) = Self::path() else {
             log::warn!("no config dir; using defaults");
-            return Ok(Self::default());
+            return Ok(Some(Self::default()));
         };
         if !path.exists() {
-            let cfg = Self::default();
-            cfg.save()
-                .with_context(|| format!("writing {}", path.display()))?;
-            log::info!("wrote default config to {}", path.display());
-            return Ok(cfg);
+            return Ok(None);
         }
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let cfg: Self =
             toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        Ok(cfg.sanitized())
+        Ok(Some(cfg.sanitized()))
+    }
+
+    /// Modification time of the file (to notice edits while running).
+    pub fn mtime() -> Option<std::time::SystemTime> {
+        std::fs::metadata(Self::path()?).ok()?.modified().ok()
     }
 
     pub fn save(&self) -> Result<()> {
@@ -160,7 +179,15 @@ impl Config {
 
     /// Clamps values into ranges the device and the math can handle.
     pub fn sanitized(mut self) -> Self {
-        self.ema_alpha = self.ema_alpha.clamp(0.01, 1.0);
+        let d = Self::default();
+        // NaN survives clamp(); replace non-finite values with defaults first.
+        if !self.smoothing_seconds.is_finite() {
+            self.smoothing_seconds = d.smoothing_seconds;
+        }
+        if !self.apply_threshold_percent.is_finite() {
+            self.apply_threshold_percent = d.apply_threshold_percent;
+        }
+        self.smoothing_seconds = self.smoothing_seconds.clamp(0.0, 60.0);
         self.apply_threshold_percent = self.apply_threshold_percent.clamp(0.0, 50.0);
         if self.step_factor.is_nan() || self.step_factor <= 1.0 {
             self.step_factor = 1.2;
@@ -213,5 +240,30 @@ mod tests {
         .sanitized();
         assert_eq!(cfg.step_factor, 1.2);
         assert_eq!(cfg.curve, default_curve(), "fewer than 2 points -> default");
+    }
+
+    #[test]
+    fn enum_values_in_toml() {
+        let cfg: Config =
+            toml::from_str("auto_mode = \"light_sensor\"\nlight_source = \"laptop\"\n").unwrap();
+        assert_eq!(cfg.auto_mode, AutoMode::LightSensor);
+        assert_eq!(cfg.light_source, LightSource::Laptop);
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(text.contains("auto_mode = \"follow_laptop\""), "{text}");
+        assert!(text.contains("light_source = \"display\""), "{text}");
+        // A typo falls back to an error the loader reports, not a panic.
+        assert!(toml::from_str::<Config>("auto_mode = \"sideways\"").is_err());
+    }
+
+    #[test]
+    fn sanitize_fixes_bad_numbers() {
+        let cfg = Config {
+            smoothing_seconds: f64::NAN,
+            apply_threshold_percent: -3.0,
+            ..Config::default()
+        }
+        .sanitized();
+        assert!(cfg.smoothing_seconds.is_finite());
+        assert_eq!(cfg.apply_threshold_percent, 0.0);
     }
 }

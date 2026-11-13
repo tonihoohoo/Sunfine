@@ -15,6 +15,8 @@ use tao::monitor::MonitorHandle;
 use tao::window::{Window, WindowBuilder, WindowId};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
+use crate::theme::{Palette, Rgb};
+
 pub(crate) type Surface = softbuffer::Surface<Rc<Window>, Rc<Window>>;
 
 // ---------------------------------------------------------------- drawing
@@ -268,6 +270,7 @@ impl Osd {
             scale,
             self.percent,
             &self.detail,
+            &crate::theme::for_shell(&self.window),
         ) else {
             return;
         };
@@ -285,10 +288,12 @@ pub fn render_osd(
     s: f32,
     percent: f64,
     detail: &str,
+    pal: &Palette,
 ) -> Option<Pixmap> {
     let mut pm = Pixmap::new(width.max(1), height.max(1))?;
     let (w, h) = (width as f32, height as f32);
-    pm.fill(Color::from_rgba8(0x2b, 0x2b, 0x2b, 255));
+    let [r, g, b] = pal.flyout;
+    pm.fill(Color::from_rgba8(r, g, b, 255));
     if let Some(border) = rounded_rect(0.5, 0.5, w - 1.0, h - 1.0, 8.0 * s) {
         let stroke = tiny_skia::Stroke {
             width: 1.0,
@@ -296,13 +301,13 @@ pub fn render_osd(
         };
         pm.stroke_path(
             &border,
-            &paint([0x45, 0x45, 0x45]),
+            &paint(pal.border),
             &stroke,
             Transform::identity(),
             None,
         );
     }
-    sun(&mut pm, 30.0 * s, h / 2.0, s, [0xff, 0xff, 0xff]);
+    sun(&mut pm, 30.0 * s, h / 2.0, s, pal.text);
 
     p.text(
         &mut pm,
@@ -310,7 +315,7 @@ pub fn render_osd(
         58.0 * s,
         25.0 * s,
         13.0 * s,
-        [0xe0, 0xe0, 0xe0],
+        pal.text,
     );
     if !detail.is_empty() {
         let dw = p.text_width(detail, 11.0 * s);
@@ -320,7 +325,7 @@ pub fn render_osd(
             w - 16.0 * s - dw,
             25.0 * s,
             11.0 * s,
-            [0x9a, 0x9a, 0x9a],
+            pal.subtext,
         );
     }
     let pct = format!("{:.0}", percent);
@@ -331,39 +336,50 @@ pub fn render_osd(
         w - 16.0 * s - pw,
         47.0 * s,
         15.0 * s,
-        [0xff, 0xff, 0xff],
+        pal.text,
     );
 
     let (bx, by, bh) = (58.0 * s, 40.0 * s, 4.0 * s);
     let bw = w - bx - 56.0 * s;
-    if let Some(track) = rounded_rect(bx, by, bw, bh, bh / 2.0) {
-        pm.fill_path(
-            &track,
-            &paint([0x5d, 0x5d, 0x5d]),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    }
+    let fill = |pm: &mut Pixmap, path: Option<tiny_skia::Path>, c: Rgb| {
+        if let Some(path) = path {
+            pm.fill_path(
+                &path,
+                &paint(c),
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
+    };
+    fill(&mut pm, rounded_rect(bx, by, bw, bh, bh / 2.0), pal.track);
     let fill_w = (bw * (percent / 100.0).clamp(0.0, 1.0) as f32).max(bh);
-    if let Some(fill) = rounded_rect(bx, by, fill_w, bh, bh / 2.0) {
-        pm.fill_path(
-            &fill,
-            &paint([0x4c, 0xc2, 0xff]),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    }
-    if let Some(knob) = PathBuilder::from_circle(bx + fill_w, by + bh / 2.0, 6.0 * s) {
-        pm.fill_path(
-            &knob,
-            &paint([0x4c, 0xc2, 0xff]),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    }
+    fill(
+        &mut pm,
+        rounded_rect(bx, by, fill_w, bh, bh / 2.0),
+        pal.accent,
+    );
+    // Fluent slider thumb: ring in the surface colour around an accent dot.
+    fill(
+        &mut pm,
+        PathBuilder::from_circle(bx + fill_w, by + bh / 2.0, 9.0 * s),
+        pal.flyout,
+    );
+    fill(
+        &mut pm,
+        PathBuilder::from_circle(bx + fill_w, by + bh / 2.0, 9.0 * s - 1.0),
+        pal.button_border,
+    );
+    fill(
+        &mut pm,
+        PathBuilder::from_circle(bx + fill_w, by + bh / 2.0, 8.0 * s),
+        pal.flyout,
+    );
+    fill(
+        &mut pm,
+        PathBuilder::from_circle(bx + fill_w, by + bh / 2.0, 5.0 * s),
+        pal.accent,
+    );
     Some(pm)
 }
 
@@ -496,10 +512,12 @@ impl Capture {
         let Some(mut pm) = Pixmap::new(size.width.max(1), size.height.max(1)) else {
             return;
         };
-        pm.fill(Color::from_rgba8(0xf3, 0xf3, 0xf3, 255));
+        let pal = crate::theme::for_app(&self.window);
+        let [r, g, b] = pal.window;
+        pm.fill(Color::from_rgba8(r, g, b, 255));
         let p = &self.painter;
-        let dark = [0x1b, 0x1b, 0x1b];
-        let grey = [0x60, 0x60, 0x60];
+        let dark = pal.text;
+        let grey = pal.subtext;
         p.text(
             &mut pm,
             &format!("Press the new shortcut for: {}", self.action.label()),
@@ -539,7 +557,7 @@ impl Capture {
                 20.0 * s,
                 136.0 * s,
                 13.0 * s,
-                [0xc4, 0x2b, 0x1c],
+                pal.error,
             );
         }
         if let Err(e) = present(&mut self.surface, &pm) {
@@ -635,16 +653,21 @@ mod tests {
     /// target/osd_preview.png
     #[test]
     fn osd_preview() {
-        let pm = render_osd(
-            &Painter::new(),
-            (OSD_W * 2.0) as u32,
-            (OSD_H * 2.0) as u32,
-            2.0,
-            42.0,
-            "follows laptop",
-        )
-        .unwrap();
-        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/osd_preview.png");
-        pm.save_png(&out).unwrap();
+        for (dark, name) in [(true, "dark"), (false, "light")] {
+            let pal = crate::theme::palette(dark, [0x00, 0x78, 0xd4]);
+            let pm = render_osd(
+                &Painter::new(),
+                (OSD_W * 2.0) as u32,
+                (OSD_H * 2.0) as u32,
+                2.0,
+                42.0,
+                "follows laptop",
+                &pal,
+            )
+            .unwrap();
+            let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("target/osd_preview_{name}.png"));
+            pm.save_png(&out).unwrap();
+        }
     }
 }

@@ -62,6 +62,9 @@ mod imp {
     pub struct Reader {
         wmi: wmi::WMIConnection,
         sensor: Option<windows::Devices::Sensors::LightSensor>,
+        /// Last good reading; reused briefly when a reading fails so the
+        /// light source doesn't flip to the LG sensor on a hiccup.
+        last_lux: Option<(f64, std::time::Instant)>,
     }
 
     impl Reader {
@@ -74,6 +77,7 @@ mod imp {
             Ok(Self {
                 wmi: wmi::WMIConnection::with_namespace_path("ROOT\\WMI")?,
                 sensor,
+                last_lux: None,
             })
         }
 
@@ -98,11 +102,25 @@ mod imp {
             })
         }
 
-        fn lux(&self) -> Option<f64> {
-            let r = self.sensor.as_ref()?.GetCurrentReading().ok()?;
-            r.IlluminanceInLux()
-                .ok()
+        fn lux(&mut self) -> Option<f64> {
+            let now = std::time::Instant::now();
+            let fresh = self
+                .sensor
+                .as_ref()
+                .and_then(|s| s.GetCurrentReading().ok())
+                .and_then(|r| r.IlluminanceInLux().ok())
                 .map(|l| (l as f64 * 10.0).round() / 10.0)
+                .filter(|l| l.is_finite() && *l >= 0.0);
+            match fresh {
+                Some(l) => {
+                    self.last_lux = Some((l, now));
+                    Some(l)
+                }
+                None => self
+                    .last_lux
+                    .filter(|(_, t)| now.duration_since(*t).as_secs() < 5)
+                    .map(|(l, _)| l),
+            }
         }
     }
 
