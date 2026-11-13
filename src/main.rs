@@ -1008,28 +1008,59 @@ fn status_text(s: &Status) -> String {
 
 /// 32x32 sun glyph, drawn in code so there are no asset files.
 fn icon() -> Icon {
-    const N: u32 = 32;
+    Icon::from_rgba(icon_rgba(), ICON_SIZE, ICON_SIZE).expect("valid icon")
+}
+
+const ICON_SIZE: u32 = 32;
+
+/// RGBA pixels of the sun glyph: a disc and eight rays at multiples of 45°.
+fn icon_rgba() -> Vec<u8> {
+    const N: u32 = ICON_SIZE;
     let mut rgba = vec![0u8; (N * N * 4) as usize];
     let c = (N as f32 - 1.0) / 2.0;
     for y in 0..N {
         for x in 0..N {
             let (dx, dy) = (x as f32 - c, y as f32 - c);
             let r = (dx * dx + dy * dy).sqrt();
-            let angle = dy.atan2(dx);
-            let ray =
-                r > 10.0 && r < 15.0 && (angle * 4.0 / std::f32::consts::PI).fract().abs() < 0.3;
+            // Angle in units of 45°; a ray where it is close to a whole number.
+            // (Distance to the nearest integer, not `fract()`: `fract()` keeps
+            // the sign, which made the rays lopsided and dropped the one at
+            // 180° where atan2 wraps from +4 to -4.)
+            let t = dy.atan2(dx) * 4.0 / std::f32::consts::PI;
+            let ray = r > 10.0 && r < 15.0 && (t - t.round()).abs() < 0.18;
             if r < 7.5 || ray {
                 let i = ((y * N + x) * 4) as usize;
                 rgba[i..i + 4].copy_from_slice(&[0xF5, 0xB7, 0x00, 0xFF]);
             }
         }
     }
-    Icon::from_rgba(rgba, N, N).expect("valid icon")
+    rgba
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_has_eight_symmetric_rays() {
+        let n = ICON_SIZE as usize;
+        let px = icon_rgba();
+        let on = |x: usize, y: usize| px[(y * n + x) * 4 + 3] != 0;
+        // Mirror-symmetric both ways, so no ray can be missing on one side.
+        for y in 0..n {
+            for x in 0..n {
+                assert_eq!(on(x, y), on(n - 1 - x, y), "x mirror at {x},{y}");
+                assert_eq!(on(x, y), on(x, n - 1 - y), "y mirror at {x},{y}");
+            }
+        }
+        // One ray per 45°: sample each direction between the disc and the edge.
+        let c = (n as f32 - 1.0) / 2.0;
+        for k in 0..8 {
+            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+            let (x, y) = (c + 12.5 * a.cos(), c + 12.5 * a.sin());
+            assert!(on(x.round() as usize, y.round() as usize), "ray {k} missing");
+        }
+    }
     use crate::laptop::Laptop;
 
     fn status(mode: Mode, laptop: Option<Laptop>, level: u32) -> Status {
