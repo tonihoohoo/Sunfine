@@ -9,6 +9,8 @@ LG UltraFine HID probe (macOS / Windows / Linux, via hidapi).
     python3 uf_probe.py poll     # dump any changing feature reports
     python3 uf_probe.py i2c-info            # iface 0 bridge: device info (read-only)
     python3 uf_probe.py i2c-scan [--init]   # iface 0 bridge: I2C bus scan (reads only)
+    python3 uf_probe.py i2c-regs <addr> <reg> <n>  # read n registers (pointer write + read)
+    python3 uf_probe.py i2c-lux [seconds]   # MAX44009-style lux at 0x4A and 0x4B
 
 Iface 0 ("HID I2C") is an NXP LPCUSBSIO USB-HID to I2C bridge (LG Screen
 Manager talks DDC/CI and firmware update through it). Protocol from NXP
@@ -164,6 +166,7 @@ def poll(interval=0.5, size=64):
 # --- NXP LPCUSBSIO bridge on iface 0 -------------------------------------
 SIO_REQ_INIT_PORT = 0x01
 SIO_REQ_DEVICE_READ = 0x04
+SIO_REQ_DEVICE_XFER = 0x05
 SIO_REQ_DEV_INFO = 0xF0
 SIO_RES = {0x00: "OK", 0x01: "ERROR", 0x02: "NAK", 0x03: "BUS_ERROR",
            0x04: "SLAVE_NAK", 0x05: "ARBLOST", 0x10: "TIMEOUT",
@@ -234,12 +237,67 @@ def i2c_scan(init=False, port=0, speed=100000):
             resp, data = b.request(SIO_REQ_DEVICE_READ, port, params, timeout=0.5, verbose=(addr == 0x08))
             if resp == 0:
                 found.append(addr)
-                print(f"0x{addr:02x}: ACK  data={data[4:].hex(' ')}", flush=True)
+                print(f"0x{addr:02x}: ACK  resp={data.hex(' ')}", flush=True)
             elif resp not in (0x02, 0x04):
                 other.setdefault(SIO_RES.get(resp, str(resp)), []).append(addr)
         print(f"port {port}: devices at {', '.join(f'0x{a:02x}' for a in found) or 'none'}")
         for k, v in other.items():
             print(f"  {k}: {len(v)} addresses (first 0x{v[0]:02x})")
+    finally:
+        b.close()
+
+
+
+def i2c_read_regs(b, addr, reg, n, port=0, verbose=False):
+    """Register read: write ONE pointer byte, repeated start, read n bytes.
+    The only bus write is the register pointer - no register is modified."""
+    params = struct.pack("<BBBB", 1, n, 0, addr) + bytes([reg])
+    resp, data = b.request(SIO_REQ_DEVICE_XFER, port, params, timeout=0.5, verbose=verbose)
+    if resp != 0:
+        return None, resp, data
+    return data[4:4 + n], resp, data
+
+
+def i2c_regs(addr, reg, n):
+    b = SioBridge()
+    try:
+        vals, resp, raw = i2c_read_regs(b, addr, reg, n, verbose=True)
+        if vals is None:
+            print(f"0x{addr:02x} reg 0x{reg:02x}: {SIO_RES.get(resp, resp)}")
+            return
+        for i, v in enumerate(vals):
+            print(f"0x{addr:02x} reg 0x{reg + i:02x} = 0x{v:02x}")
+    finally:
+        b.close()
+
+
+def max44009_lux(hi, lo):
+    exp = hi >> 4
+    mant = ((hi & 0x0F) << 4) | (lo & 0x0F)
+    return (1 << exp) * mant * 0.045
+
+
+def i2c_lux(seconds=30, addrs=(0x4A, 0x4B)):
+    """Reads MAX44009 lux registers 0x03/0x04 (never 0x00: reading it clears
+    the interrupt status the display's own MCU may rely on)."""
+    b = SioBridge()
+    try:
+        for a in addrs:
+            vals, resp, raw = i2c_read_regs(b, a, 0x02, 6, verbose=True)
+            regs = " ".join(f"{v:02x}" for v in vals) if vals is not None else SIO_RES.get(resp, resp)
+            print(f"0x{a:02x} regs 0x02..0x07: {regs}")
+        print(f"Reading lux for {seconds} s - cover the top bezel, then shine a light:", flush=True)
+        end = time.time() + seconds
+        while time.time() < end:
+            parts = []
+            for a in addrs:
+                vals, resp, raw = i2c_read_regs(b, a, 0x03, 2)
+                if vals is None or len(vals) < 2:
+                    parts.append(f"0x{a:02x}: {SIO_RES.get(resp, resp)} {raw.hex(' ')}")
+                else:
+                    parts.append(f"0x{a:02x}: {vals.hex(' ')} = {max44009_lux(vals[0], vals[1]):9.2f} lux")
+            print(time.strftime("%H:%M:%S ") + "   ".join(parts), flush=True)
+            time.sleep(1)
     finally:
         b.close()
 
@@ -254,6 +312,10 @@ if __name__ == "__main__":
         args = sys.argv[2:]
         port = int(args[args.index("--port") + 1]) if "--port" in args else 0
         i2c_scan(init="--init" in args, port=port)
+    elif cmd == "i2c-regs":
+        i2c_regs(int(sys.argv[2], 0), int(sys.argv[3], 0), int(sys.argv[4], 0))
+    elif cmd == "i2c-lux":
+        i2c_lux(float(sys.argv[2]) if len(sys.argv) > 2 else 30)
     elif cmd == "als":
         als(float(sys.argv[2]) if len(sys.argv) > 2 else None)
     else:

@@ -37,9 +37,10 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 - Windows ALS: **confirmed** the sensor class driver owns iface 2 and the
   device is in Error state – hidapi cannot see it and WinRT `LightSensor`
   does not list it (only the laptop's own sensor). Cause: Microsoft's HID
-  sensor driver fails to start on LG's descriptor (code 10). Options: laptop's
-  own ALS via WinRT as fallback; iface 0 "HID I2C" (unexplored – read-only
-  probing only, writes could hit firmware/EEPROM).
+  sensor driver fails to start on LG's descriptor (code 10). Promising path:
+  iface 0 is an NXP LPCUSBSIO I2C bridge readable via hidapi without admin;
+  candidate ALS chip MAX44009 at 0x4A/0x4B (being verified). Fallback: laptop's
+  own ALS via WinRT. Never write to the bus beyond register pointers.
 - Exact usable minimum brightness level (100 accepted; visual check needed).
 - Reconnect handling (display unplug / sleep).
 - Windows "USB device not recognized" on plug-in: a `VID_0000` device on the
@@ -61,6 +62,8 @@ diagnostics (USB problem devices, LG devices, power settings, event logs,
 WinRT LightSensor, hidapi test), writes `win_diag_<timestamp>.log`.
 `tools/win_i2c_probe.cmd` runs the read-only iface 0 bridge probe
 (`uf_probe.py i2c-info` / `i2c-scan`), logs to `win_i2c_probe.log`.
+`tools/win_i2c_als.cmd` reads lux directly from the candidate ALS chip over
+that bridge (`uf_probe.py i2c-lux`), logs to `win_i2c_als.log`.
 `tools/win_display_reset.cmd` tests programmatic fixes for the black-screen
 case (CDS_RESET mode set, SetDisplayConfig re-apply, injected
 Win+Ctrl+Shift+B), logs to `win_display_reset.log`.

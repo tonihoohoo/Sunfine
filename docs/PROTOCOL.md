@@ -21,7 +21,15 @@ Evidence: LG Screen Manager (macOS, v3.05) strings: `043e:9a40`,
 `LPC_HANDLE`, `I2C_Close`, `I2C_ResetCommand`, `NXP_Slave_Devices`, "Ask
 current version of FW through DDCCI". The API names match NXP's LPCUSBSIO
 library; protocol from NXP LPCOpen `usbd_rom_hid_sio` (`lpcusbsio_i2c.h`).
-**Not yet verified against the device.**
+**Verified on Windows 2026-11-13** (`docs/logs/win_i2c_probe.log`): header
+format and transId echo match; DEV_INFO (0xF0) -> INVALID_CMD (older
+firmware); INIT_PORT 0 @ 100 kHz -> OK with data `"3.05"` (version string?);
+absent addresses -> SLAVE_NAK. Works through hidapi on Windows (iface 0 is not
+claimed by any driver) without admin.
+
+Devices on port 0: **0x37** (DDC/CI, scaler), **0x38** (likely TI TPS6598x
+USB-PD controller), **0x4A, 0x4B** (MAX44009 ALS addresses – candidate),
+**0x54** (EEPROM range), **0x6B** (unknown).
 
 64-byte in/out reports, no report ID. Header:
 
@@ -42,9 +50,11 @@ u8 length (header + data)   u8 transId   u8 sesId (= I2C port)   u8 req|resp
 Options: 0x01 START, 0x02 STOP, 0x04 BREAK_ON_NACK, 0x08 NACK_LAST_BYTE.
 Responses: 0x00 OK, 0x02 NAK, 0x04 SLAVE_NAK, 0x11 INVALID_CMD, ...
 
-Idea: the ALS chip may sit on this I2C bus (common ALS addresses: 0x10,
-0x23, 0x29, 0x39, 0x44-0x47, 0x49, 0x4A/0x4B); DDC/CI is 0x37, EDID 0x50.
-Probe: `uf_probe.py i2c-info`, `i2c-scan [--init]` (reads only).
+MAX44009 (if that is what 0x4A/0x4B are): reg 0x03 = lux high, 0x04 = lux
+low; lux = 2^(hi>>4) * ((hi&0x0F)<<4 | lo&0x0F) * 0.045. Do not read reg 0x00
+(clears interrupt status the display MCU may use). Probe:
+`uf_probe.py i2c-lux [s]` / `i2c-regs <addr> <reg> <n>` (pointer write + read;
+no register is modified).
 
 ## Brightness (iface 1)
 
