@@ -111,6 +111,11 @@ power cycle). If the level is not there, the newest level is resent without
 a fade; if that works, fades are switched off until the display reconnects
 (`no_fade`; the display can ignore *every* faded write, log 12:09-12:13); if
 it is ignored too, the handles are reopened.
+v0.8.2: lid switch: closing the lid in follow-laptop mode moves the saved
+selection (`auto_mode`) to the light sensor and sets `lid_switched`; opening
+the lid moves it back, unless the user picked a mode meanwhile (clears the
+flag). The curve taking over is scaled to the current level (`hand_over`), so
+neither switch changes the brightness.
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 

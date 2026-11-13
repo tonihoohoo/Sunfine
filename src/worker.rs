@@ -40,6 +40,12 @@ pub struct Status {
     pub lux: Option<f64>,
     pub auto: bool,
     pub mode: Mode,
+    /// Selected automatic mode (the lid can switch it, see
+    /// `Config::lid_switched`).
+    pub auto_mode: AutoMode,
+    pub lid_switched: bool,
+    /// Increments on every automatic mode switch by the lid.
+    pub lid_switches: u64,
     /// Smoothed laptop screen % while the lid is open (follow mode input).
     pub panel: Option<f64>,
     pub laptop: Option<Laptop>,
@@ -344,7 +350,24 @@ pub fn run_with<C: Connector>(
                     retarget = true;
                 }
                 Cmd::Laptop(l) => {
+                    let switches = ctl.lid_switches();
                     let t = ctl.on_laptop(l, Instant::now());
+                    if ctl.lid_switches() != switches {
+                        log::info!(
+                            "lid {}: auto mode -> {:?} ({:?}, level {:?})",
+                            if l.is_some_and(|l| l.lid_open) {
+                                "opened"
+                            } else {
+                                "closed"
+                            },
+                            ctl.auto_mode(),
+                            ctl.mode(),
+                            ctl.level()
+                        );
+                        // The curve taking over was scaled to the current
+                        // level: no exact retarget (it would only round).
+                        last_mode = ctl.mode();
+                    }
                     if let (Some(_), Some(t)) = (&display, t) {
                         let fade = auto_fade(&ctl, transition);
                         writer.request(&mut ctl, t, fade, false);
@@ -492,6 +515,9 @@ pub fn run_with<C: Connector>(
             }),
             auto: ctl.auto(),
             mode: ctl.mode(),
+            auto_mode: ctl.auto_mode(),
+            lid_switched: ctl.lid_switched(),
+            lid_switches: ctl.lid_switches(),
             panel: ctl.panel().map(f64::round),
             laptop: ctl.laptop(),
             curve: ctl.curve().to_vec(),
@@ -978,13 +1004,22 @@ mod tests {
         let s = h.wait("following 30", |s| {
             s.level.is_some_and(|l| l.abs_diff(want) * 100 <= want * 4)
         });
-        // Lid closed -> light-sensor curve for 18 lux.
+        // Lid closed -> the selection moves to the light sensor and the
+        // level stays where it was.
+        let before = s.level;
         h.send(lap(30, false, None));
-        let want = percent_to_level(curve_percent(&s.curve, 18.0));
-        h.wait("fallback", |s| {
-            s.mode == Mode::LightSensor
-                && s.level.is_some_and(|l| l.abs_diff(want) * 100 <= want * 9)
+        let s = h.wait("fallback", |s| {
+            s.mode == Mode::LightSensor && s.auto_mode == AutoMode::LightSensor && s.lid_switched
         });
+        h.settle();
+        assert_eq!(h.settle().level, before);
+        // Lid opened -> back to following.
+        h.send(lap(30, true, None));
+        let s2 = h.wait("back to follow", |s| {
+            s.mode == Mode::LaptopSync && s.auto_mode == AutoMode::FollowLaptop
+        });
+        assert!(!s2.lid_switched);
+        assert_eq!(s2.level, s.level);
     }
 
     #[test]
