@@ -22,7 +22,7 @@ jobs:
             asset: sunfine-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Pinned to the MSRV / local toolchain so new lints don't break -D warnings.
       - uses: dtolnay/rust-toolchain@master
         with:
