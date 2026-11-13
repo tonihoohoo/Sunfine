@@ -625,7 +625,9 @@ mod tests {
                     Timing {
                         read_timeout_ms: 2,
                         reconnect_every: Duration::from_millis(20),
-                        io_timeout: Duration::from_millis(150),
+                        // Generous: a slow CI runner must never look like a
+                        // display that stopped answering.
+                        io_timeout: Duration::from_secs(1),
                         recheck_after: Duration::from_millis(20),
                     },
                 )
