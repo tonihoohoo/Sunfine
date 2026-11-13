@@ -28,6 +28,9 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 - `src/main.rs` – tao event loop, tray menu, global hotkeys, wiring
 - `src/worker.rs` – device thread: HID handles, reconnect (2 s), sensor
   reads (100 ms timeout), applies controller decisions, sends `Status`
+- `src/guard.rs` – deadline for display calls: the device runs on its own
+  thread, a call that does not return in 2 s becomes "not responding"
+  (hidapi feature reports otherwise wait forever)
 - `src/device.rs` – HID protocol (brightness iface 1, ALS iface 2; never
   opens iface 0)
 - `src/curve.rs` – pure policy: log lux curve, EMA, threshold, hotkey step,
@@ -85,6 +88,12 @@ our smoothing (1 % threshold, 300 ms fade, poll 150 ms); brightness writes
 throttled to one per 150 ms, latest wins (`Writer` in worker.rs) – a burst
 of writes while dragging curve points once left the display unresponsive
 until power cycled.
+Stuck display guards (after v0.7): every display call has a 2 s deadline
+(`guard.rs`), so a display that stops answering no longer freezes hotkeys /
+tray; the tray says "not responding (power cycle the display)" and the app
+does not reopen until the stuck call returns. Manual changes are read back;
+a mismatch is re-checked after the fade, resent once without a fade, and if
+the display still ignores it the handles are reopened (level re-read).
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 
