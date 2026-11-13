@@ -3,3 +3,6 @@
 !docs/logs/*.log
 __pycache__/
 .DS_Store
+# Raw diagnostics can contain device serial numbers; review and redact
+# before adding one to docs/logs by hand (git add -f).
+docs/logs/win_diag_*.log
