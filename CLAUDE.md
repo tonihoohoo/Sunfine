@@ -101,6 +101,16 @@ start the old `%APPDATA%\ultrafine-ctl\config\config.toml` is copied over
 (`Config::migrate_legacy`) and a running `ultrafine-ctl` copy is asked to
 quit. Display-facing text (popup label, tray status "LG UltraFine: 50 %")
 still names the display.
+Fade overlap fix (after v0.8.0): the firmware can stick at one level when a
+faded write arrives during a running fade (sunfine.log 2026-11-13: follow
+mode, 300 ms fades every 150 ms, display kept reporting 10848 for every write
+until a write without a fade). `Writer` now waits for the previous fade (+50
+ms) before the next write and reads every write back once its fade is over
+(during a fade the display reports the in-between level, log 12:16 after a
+power cycle). If the level is not there, the newest level is resent without
+a fade; if that works, fades are switched off until the display reconnects
+(`no_fade`; the display can ignore *every* faded write, log 12:09-12:13); if
+it is ignored too, the handles are reopened.
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 
