@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256">
+  <title>Sunfine</title>
+  <rect x="6" y="9" width="52" height="36" rx="4" fill="#1e1e1e"/>
+  <rect x="10" y="13" width="44" height="28" rx="1.5" fill="#2b2b2b"/>
+  <path d="M26 45h12l2 8H24z" fill="#9a9a9a"/>
+  <rect x="20" y="53" width="24" height="3" rx="1.5" fill="#9a9a9a"/>
+  <circle cx="32" cy="27" r="6.5" fill="#F5B700"/>
+  <g stroke="#F5B700" stroke-width="2.6" stroke-linecap="round">
+    <path d="M32 16v2.5M32 35.5v2.5M21 27h2.5M40.5 27h2.5M24.2 19.2l1.8 1.8M38 33l1.8 1.8M24.2 34.8l1.8-1.8M38 21l1.8-1.8"/>
+  </g>
+</svg>
