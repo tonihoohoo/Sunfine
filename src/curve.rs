@@ -1,7 +1,7 @@
 //! Brightness policy: lux -> percent curve (user points), smoothing, learning
 //! from manual adjustments, and laptop sync. Pure logic (no I/O).
 
-use crate::config::{default_curve, Config, CurvePoint, LightSource, SyncCal};
+use crate::config::{default_curve, AutoMode, Config, CurvePoint, LightSource, SyncCal};
 use crate::device::MAX_LEVEL;
 use crate::laptop::Laptop;
 
@@ -150,7 +150,7 @@ pub enum Mode {
 pub struct Controller {
     cfg: Config,
     auto: bool,
-    sync_enabled: bool,
+    auto_mode: AutoMode,
     ema: Option<f64>,
     /// Last raw value from the LG's sensor (kept while the laptop sensor is
     /// in use, so falling back is instant).
@@ -167,7 +167,7 @@ impl Controller {
     pub fn new(cfg: Config) -> Self {
         Self {
             auto: cfg.auto,
-            sync_enabled: cfg.sync_laptop,
+            auto_mode: cfg.auto_mode,
             cal: cfg.sync_cal,
             curve: sanitize_curve(cfg.curve.clone()),
             source: cfg.light_source,
@@ -198,14 +198,13 @@ impl Controller {
         &self.curve
     }
 
-    /// Sync is in effect: auto on, sync enabled, laptop adaptive brightness
-    /// on and the lid open.
+    /// Sync is in effect: auto on, mode "follow laptop" and the laptop
+    /// panel is in use (lid open). The laptop's own adaptive brightness does
+    /// not matter: whatever changes the panel, the LG follows.
     pub fn sync_active(&self) -> bool {
         self.auto
-            && self.sync_enabled
-            && self
-                .laptop
-                .is_some_and(|l| l.adaptive && l.lid_open && l.panel > 0)
+            && self.auto_mode == AutoMode::FollowLaptop
+            && self.laptop.is_some_and(|l| l.lid_open && l.panel > 0)
     }
 
     pub fn mode(&self) -> Mode {
@@ -222,8 +221,8 @@ impl Controller {
         self.auto = on;
     }
 
-    pub fn set_sync_enabled(&mut self, on: bool) {
-        self.sync_enabled = on;
+    pub fn set_auto_mode(&mut self, m: AutoMode) {
+        self.auto_mode = m;
     }
 
     /// The sensor actually in use: the laptop's only while its lid is open
@@ -524,7 +523,7 @@ mod tests {
         ctl.set_known_level(14307);
         for l in [
             Some(Laptop {
-                panel: 50,
+                panel: 0,
                 adaptive: false,
                 lid_open: true,
                 lux: None,
@@ -540,10 +539,10 @@ mod tests {
             assert_eq!(ctl.on_laptop(l), None, "{l:?}");
             assert_eq!(ctl.mode(), Mode::LightSensor, "{l:?}");
         }
-        ctl.set_sync_enabled(false);
+        ctl.set_auto_mode(AutoMode::LightSensor);
         assert_eq!(ctl.on_laptop(laptop(50)), None);
         assert_eq!(ctl.mode(), Mode::LightSensor);
-        ctl.set_sync_enabled(true);
+        ctl.set_auto_mode(AutoMode::FollowLaptop);
         assert_eq!(ctl.mode(), Mode::LaptopSync);
         assert!(ctl.auto_target().is_some());
     }
@@ -575,7 +574,7 @@ mod tests {
     #[test]
     fn laptop_sensor_as_light_source() {
         let mut ctl = Controller::new(Config {
-            sync_laptop: false,
+            auto_mode: AutoMode::LightSensor,
             ..cfg()
         });
         ctl.set_light_source(LightSource::Laptop);
@@ -617,5 +616,25 @@ mod tests {
         // Switching the setting back to the display sensor.
         ctl.set_light_source(LightSource::Display);
         assert_eq!(ctl.lux(), Some(5000.0));
+    }
+
+    #[test]
+    fn follow_laptop_without_laptop_adaptive_brightness() {
+        let mut ctl = Controller::new(cfg());
+        ctl.set_known_level(14307);
+        let manual = |panel| {
+            Some(Laptop {
+                panel,
+                adaptive: false,
+                lid_open: true,
+                lux: None,
+            })
+        };
+        assert_eq!(ctl.on_laptop(manual(66)), None); // calibrates
+        assert_eq!(ctl.mode(), Mode::LaptopSync);
+        assert!(
+            ctl.on_laptop(manual(33)).is_some(),
+            "user moved the laptop slider"
+        );
     }
 }

@@ -207,6 +207,10 @@ impl Osd {
             b = b.with_skip_taskbar(true);
         }
         let window = Rc::new(b.build(target)?);
+        // Click-through only on macOS: on Windows tao implements it with
+        // WS_EX_LAYERED, and a layered window ignores our normal (BitBlt)
+        // drawing – the popup showed up as an empty grey box (v0.2).
+        #[cfg(not(windows))]
         let _ = window.set_ignore_cursor_events(true);
         round_corners(&window);
         let surface = new_surface(&window)?;
