@@ -20,6 +20,8 @@ const USAGE_ALS: u16 = 0x0041;
 pub struct Display {
     brightness: HidDevice,
     als: Option<HidDevice>,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    als_path: Option<std::ffi::CString>,
 }
 
 impl Display {
@@ -28,6 +30,7 @@ impl Display {
         api.refresh_devices().context("refreshing HID devices")?;
         let mut brightness = None;
         let mut als = None;
+        let mut als_path = None;
         for d in api.device_list() {
             if d.vendor_id() != VID || d.product_id() != PID {
                 continue;
@@ -37,7 +40,10 @@ impl Display {
                     brightness = Some(d.open_device(api).context("opening brightness interface")?);
                 }
                 (UP_SENSOR, USAGE_ALS) if als.is_none() => match d.open_device(api) {
-                    Ok(h) => als = Some(h),
+                    Ok(h) => {
+                        als = Some(h);
+                        als_path = Some(d.path().to_owned());
+                    }
                     Err(e) => {
                         log::warn!("light sensor interface present but cannot be opened: {e}")
                     }
@@ -48,7 +54,11 @@ impl Display {
         let Some(brightness) = brightness else {
             return Ok(None);
         };
-        Ok(Some(Self { brightness, als }))
+        Ok(Some(Self {
+            brightness,
+            als,
+            als_path,
+        }))
     }
 
     /// `false` on Windows while the OS sensor driver owns (and hides) the ALS.
@@ -89,6 +99,51 @@ impl Display {
             .read_timeout(&mut buf, timeout_ms)
             .context("reading light sensor")?;
         Ok(parse_als(&buf[..n]))
+    }
+}
+
+impl Display {
+    /// Asks the sensor for its current value (GET_REPORT input). The sensor
+    /// otherwise only reports changes, so without this auto mode would wait
+    /// for the light to change after start. Best effort.
+    pub fn initial_lux(&self) -> Option<u32> {
+        let mut buf = [0u8; 8];
+        #[cfg(windows)]
+        let n = {
+            let path = self.als_path.as_ref()?;
+            win_get_input_report(path, &mut buf[..7])?
+        };
+        #[cfg(not(windows))]
+        let n = self.als.as_ref()?.get_input_report(&mut buf).ok()?;
+        parse_als(&buf[..n])
+    }
+}
+
+/// `HidD_GetInputReport` on a second handle (hidapi's windows-native
+/// backend has no get_input_report). `buf[0]` is the report id (0).
+#[cfg(windows)]
+fn win_get_input_report(path: &std::ffi::CStr, buf: &mut [u8]) -> Option<usize> {
+    use windows::core::PCSTR;
+    use windows::Win32::Devices::HumanInterfaceDevice::HidD_GetInputReport;
+    use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE};
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileA, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    unsafe {
+        let h = CreateFileA(
+            PCSTR(path.as_ptr() as _),
+            (GENERIC_READ | GENERIC_WRITE).0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_FLAGS_AND_ATTRIBUTES(0),
+            None,
+        )
+        .ok()?;
+        buf[0] = 0;
+        let ok = HidD_GetInputReport(h, buf.as_mut_ptr() as _, buf.len() as u32);
+        let _ = CloseHandle(h);
+        ok.then_some(buf.len())
     }
 }
 

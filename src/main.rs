@@ -8,14 +8,16 @@ mod config;
 mod curve;
 mod device;
 mod display_fix;
+mod editor;
 mod laptop;
+mod panel;
 mod ui;
 mod worker;
 
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use global_hotkey::hotkey::HotKey;
@@ -23,16 +25,19 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use config::{Config, Hotkeys};
-use curve::Mode;
+use config::{Config, Hotkeys, LightSource};
+use curve::{level_to_percent, percent_to_level, Mode};
+use editor::{CurveEditor, EditorAction};
+use panel::{Panel, PanelAction, PanelState};
 use ui::{Action, Capture, CaptureResult, Osd, Painter};
 use worker::{Cmd, Status};
 
 #[derive(Debug)]
 enum UserEvent {
     Menu(MenuEvent),
+    Tray(TrayIconEvent),
     HotKey(GlobalHotKeyEvent),
     Status(Status),
 }
@@ -196,11 +201,15 @@ fn run() -> Result<()> {
         let _ = proxy.send_event(UserEvent::Menu(e));
     }));
     let proxy = event_loop.create_proxy();
+    TrayIconEvent::set_event_handler(Some(move |e| {
+        let _ = proxy.send_event(UserEvent::Tray(e));
+    }));
+    let proxy = event_loop.create_proxy();
     GlobalHotKeyEvent::set_event_handler(Some(move |e| {
         let _ = proxy.send_event(UserEvent::HotKey(e));
     }));
 
-    // Tray menu (the icon itself is created once the loop runs; macOS needs that).
+    // Tray menu (right click). Left click opens the slider panel.
     let status_item = MenuItem::new("LG UltraFine: searching…", false, None);
     let up_item = MenuItem::new("", true, None);
     let down_item = MenuItem::new("", true, None);
@@ -211,6 +220,13 @@ fn run() -> Result<()> {
         cfg.sync_laptop,
         None,
     );
+    let source_item = CheckMenuItem::new(
+        "Use laptop light sensor (LG sensor when lid closed)",
+        true,
+        cfg.light_source == LightSource::Laptop,
+        None,
+    );
+    let curve_item = MenuItem::new("Brightness curve…", true, None);
     let fix_item = CheckMenuItem::new(
         "Fix black screen on connect",
         true,
@@ -243,6 +259,8 @@ fn run() -> Result<()> {
         &down_item,
         &auto_item,
         &sync_item,
+        &source_item,
+        &curve_item,
         &PredefinedMenuItem::separator(),
         &shortcuts_menu,
         &osd_item,
@@ -271,18 +289,59 @@ fn run() -> Result<()> {
     let mut worker = Some(worker);
     let painter = Rc::new(Painter::new());
     let mut osd: Option<Osd> = None;
+    let mut panel: Option<Panel> = None;
+    let mut editor: Option<CurveEditor> = None;
     let mut capture: Option<Capture> = None;
     let mut last_seq = 0u64;
+    let mut last_status: Option<Status> = None;
+    // Config writes are batched (slider drags change the curve many times).
+    let mut save_at: Option<Instant> = None;
 
     event_loop.run(move |event, target, control_flow| {
         let send = |c: Cmd| {
             let _ = tx.send(c);
         };
-        let set_auto = |cfg: &mut Config, on: bool| {
+        let mark_dirty = |save_at: &mut Option<Instant>| {
+            save_at.get_or_insert(Instant::now() + Duration::from_secs(2));
+        };
+
+        // Settings changes from the menu, panel and hotkeys go through here
+        // so the menu checks, the panel and the worker stay consistent.
+        let set_auto = |cfg: &mut Config, on: bool, save_at: &mut Option<Instant>| {
             cfg.auto = on;
             auto_item.set_checked(on);
             send(Cmd::SetAuto(on));
-            save(cfg);
+            mark_dirty(save_at);
+        };
+        let set_sync = |cfg: &mut Config, on: bool, save_at: &mut Option<Instant>| {
+            cfg.sync_laptop = on;
+            sync_item.set_checked(on);
+            send(Cmd::SetSync(on));
+            mark_dirty(save_at);
+        };
+        let set_source = |cfg: &mut Config, laptop: bool, save_at: &mut Option<Instant>| {
+            cfg.light_source = if laptop {
+                LightSource::Laptop
+            } else {
+                LightSource::Display
+            };
+            source_item.set_checked(laptop);
+            send(Cmd::SetSource(cfg.light_source));
+            mark_dirty(save_at);
+        };
+        let open_editor = |cfg: &Config, editor: &mut Option<CurveEditor>, st: Option<&Status>| {
+            if editor.is_some() {
+                return;
+            }
+            match CurveEditor::new(target, painter.clone(), cfg.curve.clone()) {
+                Ok(mut e) => {
+                    if let Some(s) = st {
+                        e.update(s.lux, &s.curve);
+                    }
+                    *editor = Some(e);
+                }
+                Err(err) => log::error!("curve window: {err:#}"),
+            }
         };
         let start_capture = |a: Action, cfg: &Config, capture: &mut Option<Capture>| {
             *capture = None;
@@ -296,6 +355,7 @@ fn run() -> Result<()> {
             Event::NewEvents(StartCause::Init) => {
                 match TrayIconBuilder::new()
                     .with_menu(Box::new(menu.take().expect("menu")))
+                    .with_menu_on_left_click(false)
                     .with_tooltip("LG UltraFine")
                     .with_icon(icon())
                     .build()
@@ -307,11 +367,28 @@ fn run() -> Result<()> {
                     Ok(o) => osd = Some(o),
                     Err(e) => log::error!("popup window: {e:#}"),
                 }
+                match Panel::new(target, painter.clone()) {
+                    Ok(mut p) => {
+                        p.set_state(panel_state(&cfg, None));
+                        panel = Some(p);
+                    }
+                    Err(e) => log::error!("panel window: {e:#}"),
+                }
                 // Visual check without the display: UF_DEMO_OSD=1.
                 if std::env::var_os("UF_DEMO_OSD").is_some() {
                     if let Some(o) = osd.as_mut() {
                         o.show(ui::lg_monitor(target), 42.0, "demo");
                     }
+                }
+            }
+            Event::UserEvent(UserEvent::Tray(TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                rect,
+                ..
+            })) => {
+                if let Some(p) = panel.as_mut() {
+                    p.toggle(target, (rect.position, rect.size));
                 }
             }
             Event::UserEvent(UserEvent::Menu(e)) => {
@@ -321,19 +398,21 @@ fn run() -> Result<()> {
                 } else if id == down_item.id() {
                     send(Cmd::Step { up: false });
                 } else if id == auto_item.id() {
-                    // The check item already toggled itself; follow it.
-                    set_auto(&mut cfg, auto_item.is_checked());
+                    // Check items toggle themselves; follow them.
+                    set_auto(&mut cfg, auto_item.is_checked(), &mut save_at);
                 } else if id == sync_item.id() {
-                    cfg.sync_laptop = sync_item.is_checked();
-                    send(Cmd::SetSync(cfg.sync_laptop));
-                    save(&cfg);
+                    set_sync(&mut cfg, sync_item.is_checked(), &mut save_at);
+                } else if id == source_item.id() {
+                    set_source(&mut cfg, source_item.is_checked(), &mut save_at);
+                } else if id == curve_item.id() {
+                    open_editor(&cfg, &mut editor, last_status.as_ref());
                 } else if id == fix_item.id() {
                     cfg.fix_black_screen = fix_item.is_checked();
                     fix_enabled.store(cfg.fix_black_screen, Ordering::Relaxed);
-                    save(&cfg);
+                    mark_dirty(&mut save_at);
                 } else if id == osd_item.id() {
                     cfg.osd = osd_item.is_checked();
-                    save(&cfg);
+                    mark_dirty(&mut save_at);
                 } else if id == sc_up.id() {
                     start_capture(Action::Up, &cfg, &mut capture);
                 } else if id == sc_down.id() {
@@ -353,12 +432,15 @@ fn run() -> Result<()> {
                         }
                     }
                     relabel(&cfg);
-                    save(&cfg);
+                    mark_dirty(&mut save_at);
                 } else if id == open_cfg_item.id() {
+                    save(&cfg);
+                    save_at = None;
                     if let Some(p) = Config::path() {
                         open_file(&p);
                     }
                 } else if id == quit_item.id() {
+                    save(&cfg);
                     send(Cmd::Quit);
                     if let Some(w) = worker.take() {
                         let _ = w.join();
@@ -374,7 +456,7 @@ fn run() -> Result<()> {
                     Some(Action::Down) => send(Cmd::Step { up: false }),
                     Some(Action::ToggleAuto) => {
                         let on = !cfg.auto;
-                        set_auto(&mut cfg, on);
+                        set_auto(&mut cfg, on, &mut save_at);
                     }
                     None => {}
                 }
@@ -387,21 +469,70 @@ fn run() -> Result<()> {
                 if let Some(t) = &tray {
                     let _ = t.set_tooltip(Some(&text));
                 }
-                if s.sync_cal != cfg.sync_cal {
+                // The worker learns (sync offset, curve points): persist.
+                if s.sync_cal != cfg.sync_cal || s.curve != cfg.curve {
                     cfg.sync_cal = s.sync_cal;
-                    save(&cfg);
+                    cfg.curve = s.curve.clone();
+                    mark_dirty(&mut save_at);
                 }
                 if s.manual_seq != last_seq {
                     last_seq = s.manual_seq;
                     if let (true, Some(o), Some(level)) = (cfg.osd, osd.as_mut(), s.level) {
-                        let pct = level as f64 * 100.0 / device::MAX_LEVEL as f64;
-                        o.show(ui::lg_monitor(target), pct, mode_short(&s));
+                        o.show(
+                            ui::lg_monitor(target),
+                            level_to_percent(level),
+                            mode_short(&s),
+                        );
                     }
                 }
+                if let Some(p) = panel.as_mut() {
+                    p.set_state(panel_state(&cfg, Some(&s)));
+                }
+                if let Some(e) = editor.as_mut() {
+                    e.update(s.lux, &s.curve);
+                }
+                last_status = Some(s);
             }
             Event::WindowEvent {
                 window_id, event, ..
             } => {
+                if let Some(p) = panel.as_mut().filter(|p| p.id() == window_id) {
+                    match p.handle(&event) {
+                        Some(PanelAction::SetPercent(pct)) => {
+                            send(Cmd::SetLevel(percent_to_level(pct)))
+                        }
+                        Some(PanelAction::ToggleAuto) => {
+                            let on = !cfg.auto;
+                            set_auto(&mut cfg, on, &mut save_at);
+                        }
+                        Some(PanelAction::ToggleSync) => {
+                            let on = !cfg.sync_laptop;
+                            set_sync(&mut cfg, on, &mut save_at);
+                        }
+                        Some(PanelAction::ToggleSource) => {
+                            let laptop = cfg.light_source != LightSource::Laptop;
+                            set_source(&mut cfg, laptop, &mut save_at);
+                        }
+                        Some(PanelAction::EditCurve) => {
+                            open_editor(&cfg, &mut editor, last_status.as_ref())
+                        }
+                        None => {}
+                    }
+                    if let Some(p) = panel.as_mut() {
+                        p.set_state(panel_state(&cfg, last_status.as_ref()));
+                    }
+                }
+                if let Some(e) = editor.as_mut().filter(|e| e.id() == window_id) {
+                    match e.handle(&event) {
+                        Some(EditorAction::Changed(pts)) => {
+                            cfg.curve = pts.clone();
+                            send(Cmd::SetCurve(pts));
+                            mark_dirty(&mut save_at);
+                        }
+                        Some(EditorAction::Close) => editor = None,
+                        None => {}
+                    }
+                }
                 if let Some(c) = capture.as_mut().filter(|c| c.id() == window_id) {
                     match c.handle(&event) {
                         Some(CaptureResult::Cancel) => capture = None,
@@ -411,7 +542,7 @@ fn run() -> Result<()> {
                                 Ok(()) => {
                                     set_spec(&mut cfg, a, spec);
                                     relabel(&cfg);
-                                    save(&cfg);
+                                    mark_dirty(&mut save_at);
                                     capture = None;
                                 }
                                 Err(msg) => c.set_message(&msg),
@@ -425,6 +556,12 @@ fn run() -> Result<()> {
                 if let Some(o) = osd.as_mut().filter(|o| o.id() == id) {
                     o.draw();
                 }
+                if let Some(p) = panel.as_mut().filter(|p| p.id() == id && p.visible()) {
+                    p.draw();
+                }
+                if let Some(e) = editor.as_mut().filter(|e| e.id() == id) {
+                    e.draw();
+                }
                 if let Some(c) = capture.as_mut().filter(|c| c.id() == id) {
                     c.draw();
                 }
@@ -432,11 +569,52 @@ fn run() -> Result<()> {
             _ => {}
         }
 
-        *control_flow = match osd.as_mut().and_then(|o| o.tick(Instant::now())) {
+        let now = Instant::now();
+        if save_at.is_some_and(|t| now >= t) {
+            save(&cfg);
+            save_at = None;
+        }
+        let wake = [osd.as_mut().and_then(|o| o.tick(now)), save_at]
+            .into_iter()
+            .flatten()
+            .min();
+        *control_flow = match wake {
             Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         };
     });
+}
+
+fn panel_state(cfg: &Config, s: Option<&Status>) -> PanelState {
+    PanelState {
+        connected: s.is_some_and(|s| s.connected),
+        percent: s.and_then(|s| s.level).map(level_to_percent).unwrap_or(0.0),
+        auto: cfg.auto,
+        sync: cfg.sync_laptop,
+        laptop_sensor: cfg.light_source == LightSource::Laptop,
+        status: s.map(panel_status).unwrap_or_default(),
+    }
+}
+
+fn panel_status(s: &Status) -> String {
+    let src = match s.source {
+        LightSource::Display => "LG sensor",
+        LightSource::Laptop => "laptop sensor",
+    };
+    match s.mode {
+        Mode::Manual => "manual".into(),
+        Mode::LaptopSync => s
+            .laptop
+            .map(|l| format!("follows laptop {} %", l.panel))
+            .unwrap_or_default(),
+        Mode::LightSensor if !s.light_sensor && s.source == LightSource::Display => {
+            "LG sensor not readable".into()
+        }
+        Mode::LightSensor => match s.lux {
+            Some(l) => format!("auto · {l:.0} lx ({src})"),
+            None => format!("auto · waiting for {src}"),
+        },
+    }
 }
 
 /// Polls the laptop panel twice a second and forwards changes.
@@ -458,7 +636,7 @@ fn laptop_poller(tx: mpsc::Sender<Cmd>) {
             }
             last = now;
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
@@ -482,8 +660,7 @@ fn open_file(p: &std::path::Path) {
 fn mode_short(s: &Status) -> &'static str {
     match s.mode {
         Mode::Manual => "manual",
-        Mode::Paused => "auto paused",
-        Mode::LightSensor if !s.light_sensor => "manual",
+        Mode::LightSensor if !s.light_sensor && s.source == LightSource::Display => "manual",
         Mode::LightSensor => "auto",
         Mode::LaptopSync => "follows laptop",
     }
@@ -495,22 +672,9 @@ fn status_text(s: &Status) -> String {
     }
     let pct = s
         .level
-        .map(|l| format!("{:.0} %", l as f64 * 100.0 / device::MAX_LEVEL as f64))
+        .map(|l| format!("{:.0} %", level_to_percent(l)))
         .unwrap_or("?".into());
-    let mode = match s.mode {
-        Mode::Manual => "manual".to_string(),
-        Mode::Paused => "auto paused".to_string(),
-        Mode::LightSensor if !s.light_sensor => "auto: light sensor not readable".to_string(),
-        Mode::LightSensor => s
-            .lux
-            .map(|l| format!("auto, {l:.0} lx"))
-            .unwrap_or("auto".into()),
-        Mode::LaptopSync => s
-            .laptop
-            .map(|l| format!("follows laptop {} %", l.panel))
-            .unwrap_or_default(),
-    };
-    format!("LG UltraFine: {pct} ({mode})")
+    format!("LG UltraFine: {pct} ({})", panel_status(s))
 }
 
 /// 32x32 sun glyph, drawn in code so there are no asset files.

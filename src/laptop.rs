@@ -5,8 +5,9 @@
 //! - adaptive brightness on/off: power setting ADAPTBRIGHT of the active
 //!   scheme for the current power source (AC / battery)
 //! - lid open: the internal panel has an active display path
+//! - laptop lux: WinRT `Windows.Devices.Sensors.LightSensor` default sensor
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Laptop {
     /// Current panel brightness in percent.
     pub panel: u8,
@@ -14,6 +15,8 @@ pub struct Laptop {
     pub adaptive: bool,
     /// Internal panel is active (lid open, not "second screen only").
     pub lid_open: bool,
+    /// Laptop light sensor (Windows default LightSensor), lux.
+    pub lux: Option<f64>,
 }
 
 #[cfg(windows)]
@@ -58,12 +61,19 @@ mod imp {
     /// Not `Send`: create it on the thread that uses it (COM).
     pub struct Reader {
         wmi: wmi::WMIConnection,
+        sensor: Option<windows::Devices::Sensors::LightSensor>,
     }
 
     impl Reader {
         pub fn new() -> Result<Self> {
+            let sensor = windows::Devices::Sensors::LightSensor::GetDefault().ok();
+            log::info!(
+                "laptop light sensor: {}",
+                if sensor.is_some() { "found" } else { "none" }
+            );
             Ok(Self {
                 wmi: wmi::WMIConnection::with_namespace_path("ROOT\\WMI")?,
+                sensor,
             })
         }
 
@@ -84,7 +94,15 @@ mod imp {
                 panel,
                 adaptive: adaptive_enabled().unwrap_or(false),
                 lid_open: crate::display_fix::internal_panel_active().unwrap_or(true),
+                lux: self.lux(),
             })
+        }
+
+        fn lux(&self) -> Option<f64> {
+            let r = self.sensor.as_ref()?.GetCurrentReading().ok()?;
+            r.IlluminanceInLux()
+                .ok()
+                .map(|l| (l as f64 * 10.0).round() / 10.0)
         }
     }
 

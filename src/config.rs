@@ -1,6 +1,6 @@
 //! User configuration: TOML in the platform config dir
-//! (Windows `%APPDATA%\ultrafine-ctl\config.toml`,
-//! macOS `~/Library/Application Support/ultrafine-ctl/config.toml`).
+//! (Windows `%APPDATA%\ultrafine-ctl\config.toml`).
+//! Unknown keys from older versions are ignored.
 
 use std::path::PathBuf;
 
@@ -12,37 +12,49 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Automatic brightness from the display's light sensor.
     pub auto: bool,
-    /// Lowest level auto mode and hotkeys go to (device accepts down to ~100).
-    pub min_level: u32,
-    /// Highest level (device maximum is 54000).
-    pub max_level: u32,
-    /// Lux at/below which auto mode uses `min_level`.
-    pub lux_low: f64,
-    /// Lux at/above which auto mode uses `max_level`.
-    pub lux_high: f64,
     /// Fade time the display uses for each change, ms.
     pub transition_ms: u16,
     /// Exponential moving average factor for lux (0..1, higher = faster).
     pub ema_alpha: f64,
     /// Auto mode only applies a new level if it differs by more than this
-    /// fraction of `max_level`.
-    pub apply_threshold: f64,
+    /// many percentage points.
+    pub apply_threshold_percent: f64,
     /// Each hotkey press multiplies / divides the level by this factor.
     pub step_factor: f64,
-    /// A manual hotkey press pauses auto mode for this many minutes.
-    pub manual_pause_minutes: u64,
     /// Windows: re-apply the saved display layout when the LG is connected
     /// but left black (persisted layout has it on, live layout does not).
     pub fix_black_screen: bool,
     /// Windows: while auto mode is on, the laptop's own adaptive brightness
     /// is on and the lid is open, make the LG follow the laptop panel.
     pub sync_laptop: bool,
-    /// Show the brightness popup on manual changes.
+    /// Show the brightness popup on hotkey changes.
     pub osd: bool,
+    /// Which light sensor drives the curve: the LG's own or the laptop's.
+    pub light_source: LightSource,
+    /// Auto-brightness curve: brightness (%) for each light level (lux).
+    /// Edited in the curve window, and learned from manual adjustments.
+    pub curve: Vec<CurvePoint>,
     /// Pair (laptop panel %, LG level) that looked equal; set on the first
     /// sync and whenever the user adjusts the LG while syncing.
     pub sync_cal: Option<SyncCal>,
     pub hotkeys: Hotkeys,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LightSource {
+    /// The display's own sensor (top bezel).
+    #[default]
+    Display,
+    /// The laptop's sensor (Windows LightSensor) – reacts like the laptop's
+    /// own adaptive brightness.
+    Laptop,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct CurvePoint {
+    pub lux: f64,
+    pub percent: f64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -59,22 +71,27 @@ pub struct Hotkeys {
     pub toggle_auto: String,
 }
 
+pub fn default_curve() -> Vec<CurvePoint> {
+    // ~30 % in an ~18 lux room matches the level the user had (14307).
+    [(1.0, 2.0), (20.0, 30.0), (300.0, 65.0), (5000.0, 100.0)]
+        .into_iter()
+        .map(|(lux, percent)| CurvePoint { lux, percent })
+        .collect()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             auto: true,
-            min_level: 1000,
-            max_level: 54000,
-            lux_low: 1.0,
-            lux_high: 5000.0,
             transition_ms: 800,
             ema_alpha: 0.3,
-            apply_threshold: 0.03,
+            apply_threshold_percent: 3.0,
             step_factor: 1.2,
-            manual_pause_minutes: 30,
             fix_black_screen: true,
             sync_laptop: true,
             osd: true,
+            light_source: LightSource::Display,
+            curve: default_curve(),
             sync_cal: None,
             hotkeys: Hotkeys::default(),
         }
@@ -131,17 +148,12 @@ impl Config {
 
     /// Clamps values into ranges the device and the math can handle.
     pub fn sanitized(mut self) -> Self {
-        self.max_level = self.max_level.clamp(100, crate::device::MAX_LEVEL);
-        self.min_level = self.min_level.clamp(100, self.max_level);
-        self.lux_low = self.lux_low.max(0.0);
-        if self.lux_high <= self.lux_low {
-            self.lux_high = self.lux_low + 1.0;
-        }
         self.ema_alpha = self.ema_alpha.clamp(0.01, 1.0);
-        self.apply_threshold = self.apply_threshold.clamp(0.0, 0.5);
+        self.apply_threshold_percent = self.apply_threshold_percent.clamp(0.0, 50.0);
         if self.step_factor.is_nan() || self.step_factor <= 1.0 {
             self.step_factor = 1.2;
         }
+        self.curve = crate::curve::sanitize_curve(std::mem::take(&mut self.curve));
         self
     }
 }
@@ -165,29 +177,29 @@ mod tests {
         let text = toml::to_string_pretty(&cfg).unwrap();
         assert_eq!(toml::from_str::<Config>(&text).unwrap(), cfg);
 
-        // Missing keys fall back to defaults.
-        let partial: Config =
-            toml::from_str("auto = false\n[hotkeys]\nup = \"ctrl+F1\"\n").unwrap();
+        // Missing keys fall back to defaults; old keys are ignored.
+        let partial: Config = toml::from_str(
+            "auto = false\nmin_level = 1000\nmanual_pause_minutes = 30\n[hotkeys]\nup = \"ctrl+F1\"\n",
+        )
+        .unwrap();
         assert!(!partial.auto);
         assert_eq!(partial.hotkeys.up, "ctrl+F1");
         assert_eq!(partial.hotkeys.down, Hotkeys::default().down);
-        assert_eq!(partial.max_level, 54000);
+        assert_eq!(partial.curve, default_curve());
     }
 
     #[test]
     fn sanitize_clamps() {
         let cfg = Config {
-            min_level: 0,
-            max_level: 99999,
-            lux_low: 10.0,
-            lux_high: 5.0,
             step_factor: 0.5,
+            curve: vec![CurvePoint {
+                lux: 5.0,
+                percent: 150.0,
+            }],
             ..Config::default()
         }
         .sanitized();
-        assert_eq!(cfg.max_level, 54000);
-        assert_eq!(cfg.min_level, 100);
-        assert!(cfg.lux_high > cfg.lux_low);
         assert_eq!(cfg.step_factor, 1.2);
+        assert_eq!(cfg.curve, default_curve(), "fewer than 2 points -> default");
     }
 }

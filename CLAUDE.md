@@ -45,11 +45,17 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 - Dev check for Windows from macOS: `cargo check --target
   x86_64-pc-windows-msvc` (target installed)
 
-Done in v0.2: laptop sync (option, calibration pair `sync_cal` updated by
-hotkeys while syncing), shortcut capture from the tray, brightness popup.
-Not done yet: "Fix light sensor" button (UAC), initial lux on start (sensor
-only reports changes), logging to file for the GUI build. Fn+F5/F6 cannot be
-hooked (handled by the laptop firmware); with sync on they move the LG too.
+v0.2: laptop sync, shortcut capture, brightness popup.
+v0.3: tray panel (left click) with slider + toggles (`src/panel.rs`), curve
+editor (`src/editor.rs`), curve of user points (`config.curve`, linear on a
+log-lux axis), manual changes teach the curve instead of pausing auto mode,
+light source option (laptop sensor via WinRT, falls back to the LG sensor
+when the lid is closed), initial lux via GET_REPORT (HidD_GetInputReport on
+Windows; unverified on the device).
+`cargo test` renders target/{osd,panel,editor}_preview.png for a visual check.
+Not done yet: "Fix light sensor" button (UAC), logging to file for the GUI
+build. Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
+the LG too.
 
 ## Auto-brightness design
 
@@ -65,11 +71,14 @@ hooked (handled by the laptop firmware); with sync on they move the LG too.
   show the LG (checked 2026-11-13); Windows adaptive brightness only drives
   the internal panel.
 
-- Map lux -> level with a log curve, user-tunable min/max level and lux range.
-- Smooth: EMA on lux, apply only if target differs > ~3 %, use the device's own
-  transition field (e.g. 800 ms) for fades.
-- Manual hotkey press pauses auto mode for N minutes (configurable), or shifts
-  the curve offset (decide later).
+- Curve of user points (lux, %), linear between points on a log10(lux+1)
+  axis, flat outside. Default (1,2) (20,30) (300,65) (5000,100).
+- Smooth: EMA on lux, apply only if target differs > 3 points, use the
+  device's own transition field (800 ms) for fades.
+- Manual change (hotkey/slider) in auto mode: no pause; the nearest curve
+  point within ~2x lux moves to (current lux, chosen %), else a point is
+  inserted; neighbours are clamped so the curve stays non-decreasing.
+  While syncing with the laptop the change sets the sync offset instead.
 - Sensor is event-driven: block on `read_timeout`, keep last lux.
 
 ## Open questions / risks
