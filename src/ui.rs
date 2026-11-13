@@ -195,7 +195,7 @@ impl Osd {
     pub fn new<T>(target: &EventLoopWindowTarget<T>, painter: Rc<Painter>) -> Result<Self> {
         #[allow(unused_mut)]
         let mut b = WindowBuilder::new()
-            .with_title("LG UltraFine brightness")
+            .with_title("Sunfine brightness")
             .with_decorations(false)
             .with_resizable(false)
             .with_always_on_top(true)
@@ -456,7 +456,7 @@ impl Capture {
     ) -> Result<Self> {
         let window = Rc::new(
             WindowBuilder::new()
-                .with_title("LG UltraFine – set shortcut")
+                .with_title("Sunfine – set shortcut")
                 .with_resizable(false)
                 .with_always_on_top(true)
                 .with_inner_size(LogicalSize::new(460.0, 150.0))

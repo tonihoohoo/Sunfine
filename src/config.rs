@@ -1,8 +1,10 @@
 //! User configuration: TOML in the platform config dir
-//! (Windows `%APPDATA%\ultrafine-ctl\config.toml`).
+//! (Windows `%APPDATA%\Sunfine\config\config.toml`; settings of the old
+//! name `ultrafine-ctl` are copied over on first start, see
+//! [`Config::migrate_legacy`]).
 //! Unknown keys from older versions are ignored.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -178,10 +180,37 @@ impl Default for Hotkeys {
     }
 }
 
+/// Name of the settings folder.
+const APP_NAME: &str = "Sunfine";
+/// Folder name used before the rename to Sunfine.
+const LEGACY_APP_NAME: &str = "ultrafine-ctl";
+
+/// Copies `old` to `new` if `new` does not exist yet and `old` does.
+fn migrate_file(old: &Path, new: &Path) -> Option<PathBuf> {
+    if new.exists() || !old.is_file() {
+        return None;
+    }
+    std::fs::create_dir_all(new.parent()?).ok()?;
+    std::fs::copy(old, new).ok()?;
+    Some(old.to_path_buf())
+}
+
 impl Config {
     pub fn path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "ultrafine-ctl")
-            .map(|d| d.config_dir().join("config.toml"))
+        Self::path_for(APP_NAME)
+    }
+
+    fn path_for(app: &str) -> Option<PathBuf> {
+        directories::ProjectDirs::from("", "", app).map(|d| d.config_dir().join("config.toml"))
+    }
+
+    /// The app was called `ultrafine-ctl` before it became Sunfine. When no
+    /// Sunfine settings exist yet, copies the old settings file over (the
+    /// old one is left in place, so an older version still finds it).
+    /// Returns the old path when it copied. Call before anything creates
+    /// the new config directory.
+    pub fn migrate_legacy() -> Option<PathBuf> {
+        migrate_file(&Self::path_for(LEGACY_APP_NAME)?, &Self::path()?)
     }
 
     /// Loads the config, writing the defaults on first run.
@@ -269,6 +298,29 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_settings_are_copied_once() {
+        let dir = std::env::temp_dir().join(format!("sunfine-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let old = dir.join("ultrafine-ctl/config/config.toml");
+        let new = dir.join("Sunfine/config/config.toml");
+        // Nothing to migrate.
+        assert_eq!(migrate_file(&old, &new), None);
+        assert!(!new.exists());
+        // Old settings are copied, the old file stays.
+        std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+        std::fs::write(&old, "auto_mode = \"light_sensor\"\n").unwrap();
+        assert_eq!(migrate_file(&old, &new), Some(old.clone()));
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "auto_mode = \"light_sensor\"\n");
+        assert!(old.exists());
+        // Existing new settings are never overwritten.
+        std::fs::write(&new, "x = 1\n").unwrap();
+        std::fs::write(&old, "y = 2\n").unwrap();
+        assert_eq!(migrate_file(&old, &new), None);
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "x = 1\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn roundtrip_and_partial_file() {

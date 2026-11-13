@@ -1,4 +1,4 @@
-# ultrafine-ctl
+# Sunfine (repo `ultrafine-ctl`)
 
 Brightness hotkeys + automatic brightness for the LG UltraFine 5K (1st gen,
 27MD5KA) on **Windows only** (user decision 2026-11-13: no macOS release; the
@@ -61,7 +61,7 @@ the laptop's adaptive brightness; lid closed -> light sensor); all settings in
 the panel (stays open, invalid options greyed via `PanelState`); short
 right-click menu (native menus always close on click); popup fix: no
 click-through on Windows (tao makes it WS_EX_LAYERED -> grey box); log file
-`ultrafine-ctl.log` next to the config.
+`ultrafine-ctl.log` next to the config (now `sunfine.log`).
 v0.5: back to the native tray menu (panel removed – custom slider felt bad;
 Windows closes tray menus on click, accepted); Brightness presets submenu;
 `menu_view()` pure + tested; manual mode default; light/dark + accent theme
@@ -94,6 +94,13 @@ tray; the tray says "not responding (power cycle the display)" and the app
 does not reopen until the stuck call returns. Manual changes are read back;
 a mismatch is re-checked after the fade, resent once without a fade, and if
 the display still ignores it the handles are reopened (level re-read).
+v0.7 rename: the app is **Sunfine** (crate/exe `sunfine`, release asset
+`sunfine-windows-x64.exe`, settings `%APPDATA%\Sunfine\config\config.toml`,
+log `sunfine.log`, single-instance names `Local\sunfine[-quit]`). On first
+start the old `%APPDATA%\ultrafine-ctl\config\config.toml` is copied over
+(`Config::migrate_legacy`) and a running `ultrafine-ctl` copy is asked to
+quit. Display-facing text (popup label, tray status "LG UltraFine: 50 %")
+still names the display.
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 
