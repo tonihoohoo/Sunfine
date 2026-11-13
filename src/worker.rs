@@ -11,6 +11,7 @@ use anyhow::Result;
 
 use crate::config::{AutoMode, Config, CurvePoint};
 use crate::curve::{Controller, Mode};
+use crate::guard::{is_not_responding, Guarded, GuardedConnector};
 use crate::laptop::Laptop;
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,9 @@ pub struct Status {
     pub follow_scale: f64,
     /// Increments on every applied hotkey change (popup trigger).
     pub manual_seq: u64,
+    /// The display stopped answering (a call is stuck); usually only a
+    /// power cycle of the display helps. Cleared when it answers again.
+    pub not_responding: bool,
 }
 
 /// An opened display.
@@ -98,11 +102,18 @@ impl Connector for HidConnector {
 pub struct Timing {
     pub read_timeout_ms: i32,
     pub reconnect_every: Duration,
+    /// Deadline for one call to the display (see `guard.rs`).
+    pub io_timeout: Duration,
+    /// Extra wait after a fade before a mismatched read-back is re-checked.
+    pub recheck_after: Duration,
 }
 
 const TIMING: Timing = Timing {
     read_timeout_ms: 100,
     reconnect_every: Duration::from_secs(2),
+    // Feature reports normally take a few ms.
+    io_timeout: Duration::from_secs(2),
+    recheck_after: Duration::from_millis(300),
 };
 const PRESET_FADE_MS: u16 = 250;
 const HOTKEY_FADE_MS: u16 = 250;
@@ -114,11 +125,20 @@ const FOLLOW_FADE_MS: u16 = 300;
 const MIN_WRITE_GAP: Duration = Duration::from_millis(150);
 
 /// Throttled brightness writes: the latest request wins.
+///
+/// Manual changes are read back. If the display reports another level, it
+/// is checked again once the fade is over; if it still disagrees the level
+/// is sent once more without a fade, and if the display ignores that too the
+/// handles are dropped and reopened (which also re-reads the real level).
+/// At most two extra calls per manual change, so this never floods.
 #[derive(Default)]
 struct Writer {
     last: Option<Instant>,
     /// (level, fade ms, read back afterwards)
     pending: Option<(u32, u16, bool)>,
+    /// (when, level): re-check a read-back that did not match yet.
+    recheck: Option<(Instant, u32)>,
+    recheck_after: Duration,
 }
 
 impl Writer {
@@ -129,8 +149,19 @@ impl Writer {
         ctl.set_known_level(level);
     }
 
-    /// Sends the waiting request if the gap has passed.
+    /// Forgets device state (disconnect / reconnect).
+    fn reset(&mut self) {
+        self.pending = None;
+        self.recheck = None;
+    }
+
+    /// Sends the waiting request if the gap has passed, and runs a due
+    /// read-back re-check.
     fn flush<D: Device>(&mut self, d: &D, failed: &mut bool) {
+        if self.pending.is_none() {
+            self.run_recheck(d, failed);
+            return;
+        }
         let Some((level, fade, check)) = self.pending else {
             return;
         };
@@ -138,16 +169,57 @@ impl Writer {
             return;
         }
         self.pending = None;
+        // A newer level makes an older re-check moot.
+        self.recheck = None;
         self.last = Some(Instant::now());
         match d.set_brightness(level, fade) {
             Ok(()) => {
                 log::debug!("level -> {level} ({fade} ms)");
                 if check {
-                    verify(d, level);
+                    match verify(d, level) {
+                        Check::Ok => {}
+                        Check::Mismatch => {
+                            let wait = Duration::from_millis(fade as u64) + self.recheck_after;
+                            self.recheck = Some((Instant::now() + wait, level));
+                        }
+                        Check::Failed => *failed = true,
+                    }
                 }
             }
             Err(e) => {
                 log::warn!("set brightness failed: {e:#}");
+                *failed = true;
+            }
+        }
+    }
+
+    fn run_recheck<D: Device>(&mut self, d: &D, failed: &mut bool) {
+        let Some((at, level)) = self.recheck else {
+            return;
+        };
+        if Instant::now() < at {
+            return;
+        }
+        self.recheck = None;
+        match verify(d, level) {
+            Check::Ok => return,
+            Check::Failed => {
+                *failed = true;
+                return;
+            }
+            Check::Mismatch => {}
+        }
+        log::warn!("display still not at {level} after the fade; sending it again without a fade");
+        self.last = Some(Instant::now());
+        if let Err(e) = d.set_brightness(level, 0) {
+            log::warn!("set brightness failed: {e:#}");
+            *failed = true;
+            return;
+        }
+        match verify(d, level) {
+            Check::Ok => {}
+            Check::Mismatch | Check::Failed => {
+                log::warn!("display ignores brightness writes; reopening it");
                 *failed = true;
             }
         }
@@ -188,19 +260,27 @@ pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
 
 pub fn run_with<C: Connector>(
     cfg: Config,
-    mut conn: C,
+    conn: C,
     rx: Receiver<Cmd>,
     notify: impl Fn(Status),
     timing: Timing,
-) {
+) where
+    C::D: Send + 'static,
+{
+    // Every display call gets a deadline, so a display that stops answering
+    // cannot freeze hotkeys, the tray and the settings with it.
+    let mut conn = GuardedConnector::new(conn, timing.io_timeout);
     let mut transition = cfg.transition_ms;
     let mut ctl = Controller::new(cfg);
-    let mut display: Option<C::D> = None;
+    let mut display: Option<Guarded<C::D>> = None;
     let mut last_attempt: Option<Instant> = None;
     let mut last_status: Option<Status> = None;
     let mut last_mode = ctl.mode();
     let mut manual_seq = 0u64;
-    let mut writer = Writer::default();
+    let mut writer = Writer {
+        recheck_after: timing.recheck_after,
+        ..Writer::default()
+    };
 
     loop {
         let mut failed = false;
@@ -302,7 +382,7 @@ pub fn run_with<C: Connector>(
                             d.has_light_sensor()
                         );
                         ctl.set_known_level(level);
-                        writer.pending = None;
+                        writer.reset();
                         // The sensor only reports changes; ask for the current value.
                         match d.initial_lux() {
                             Some(lux) => {
@@ -359,9 +439,13 @@ pub fn run_with<C: Connector>(
             std::thread::sleep(Duration::from_millis(timing.read_timeout_ms.max(1) as u64));
         }
         if failed && display.is_some() {
-            log::info!("display disconnected");
+            if conn.stuck() {
+                log::warn!("display not responding; waiting for it to answer again");
+            } else {
+                log::info!("display disconnected");
+            }
             display = None;
-            writer.pending = None;
+            writer.reset();
             ctl.reset_device();
         }
 
@@ -388,6 +472,7 @@ pub fn run_with<C: Connector>(
             curve_scale: ctl.curve_scale(),
             follow_scale: ctl.follow_scale(),
             manual_seq,
+            not_responding: conn.stuck(),
         };
         if last_status.as_ref() != Some(&status) {
             notify(status.clone());
@@ -396,15 +481,34 @@ pub fn run_with<C: Connector>(
     }
 }
 
-/// Diagnostics: reads the level back after a manual change and logs it, so
-/// the log shows whether the display took the write.
-fn verify<D: Device>(d: &D, wrote: u32) {
+enum Check {
+    Ok,
+    Mismatch,
+    /// The display did not answer in time: drop it.
+    Failed,
+}
+
+/// Reads the level back after a manual change and logs it, so the log
+/// shows whether the display took the write.
+fn verify<D: Device>(d: &D, wrote: u32) -> Check {
     match d.brightness() {
         Ok(read) if read.abs_diff(wrote) <= wrote / 100 + 1 => {
-            log::info!("display reports {read} (ok)")
+            log::info!("display reports {read} (ok)");
+            Check::Ok
         }
-        Ok(read) => log::warn!("wrote {wrote} but the display reports {read}"),
-        Err(e) => log::warn!("read-back failed: {e:#}"),
+        Ok(read) => {
+            log::warn!("wrote {wrote} but the display reports {read}");
+            Check::Mismatch
+        }
+        Err(e) if is_not_responding(&e) => {
+            log::warn!("read-back failed: {e:#}");
+            Check::Failed
+        }
+        // A one-off read error: keep going (as before).
+        Err(e) => {
+            log::warn!("read-back failed: {e:#}");
+            Check::Ok
+        }
     }
 }
 
@@ -426,6 +530,20 @@ mod tests {
         /// Every set_brightness call: (level, transition).
         writes: Vec<(u32, u16)>,
         fail_writes: bool,
+        /// Brightness calls block while set (firmware not answering).
+        hang: bool,
+        /// Writes "succeed" but the level stays (firmware ignores them).
+        ignore_writes: bool,
+        opens: usize,
+    }
+
+    impl SimDev {
+        /// Blocks while the simulated firmware does not answer.
+        fn wait_while_hung(&self) {
+            while self.0.lock().unwrap().hang {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
     }
 
     #[derive(Clone)]
@@ -436,14 +554,18 @@ mod tests {
             self.0.lock().unwrap().has_sensor
         }
         fn brightness(&self) -> Result<u32> {
+            self.wait_while_hung();
             Ok(self.0.lock().unwrap().level)
         }
         fn set_brightness(&self, level: u32, transition_ms: u16) -> Result<()> {
+            self.wait_while_hung();
             let mut s = self.0.lock().unwrap();
             if s.fail_writes || !s.present {
                 anyhow::bail!("unplugged");
             }
-            s.level = level;
+            if !s.ignore_writes {
+                s.level = level;
+            }
             s.writes.push((level, transition_ms));
             Ok(())
         }
@@ -470,12 +592,11 @@ mod tests {
     impl Connector for SimConn {
         type D = SimDev;
         fn open(&mut self) -> Result<Option<SimDev>> {
-            Ok(self
-                .0
-                .lock()
-                .unwrap()
-                .present
-                .then(|| SimDev(self.0.clone())))
+            let mut s = self.0.lock().unwrap();
+            if s.present {
+                s.opens += 1;
+            }
+            Ok(s.present.then(|| SimDev(self.0.clone())))
         }
     }
 
@@ -504,6 +625,8 @@ mod tests {
                     Timing {
                         read_timeout_ms: 2,
                         reconnect_every: Duration::from_millis(20),
+                        io_timeout: Duration::from_millis(150),
+                        recheck_after: Duration::from_millis(20),
                     },
                 )
             });
@@ -859,5 +982,73 @@ mod tests {
         assert!(!s.connected);
         assert_eq!(s.level, None);
         assert!(h.sim().writes.is_empty());
+    }
+    #[test]
+    fn display_that_stops_answering_does_not_freeze_the_worker() {
+        let mut h = Harness::start(
+            Config {
+                auto: false,
+                ..sensor_cfg()
+            },
+            present(14307),
+        );
+        h.wait("connected", |s| s.connected);
+        h.sim().hang = true;
+        h.send(Cmd::Step { up: true });
+        h.wait("not responding", |s| s.not_responding && !s.connected);
+        // The worker keeps serving commands while the call is stuck.
+        h.send(Cmd::SetAuto(true));
+        h.wait("auto while stuck", |s| s.auto);
+        let opens = h.sim().opens;
+        h.settle();
+        assert_eq!(h.sim().opens, opens, "no reopen while a call is stuck");
+        // The display answers again (power cycled): reconnect by itself.
+        h.sim().hang = false;
+        let s = h.wait("recovered", |s| s.connected && !s.not_responding);
+        assert!(s.level.is_some());
+        assert!(h.sim().opens > opens);
+    }
+
+    #[test]
+    fn display_that_ignores_writes_is_resent_once_then_reopened() {
+        let mut h = Harness::start(
+            Config {
+                auto: false,
+                ..sensor_cfg()
+            },
+            present(14307),
+        );
+        h.wait("connected", |s| s.connected);
+        let opens = h.sim().opens;
+        h.sim().ignore_writes = true;
+        h.send(Cmd::Step { up: true });
+        // Reopened, and the real level is read back from the display.
+        let s = h.wait("reopened", |s| {
+            s.connected && s.level == Some(14307) && s.manual_seq == 1
+        });
+        assert!(!s.not_responding);
+        let sim = h.sim();
+        assert!(sim.opens > opens, "reopened");
+        // The step, then one resend without a fade, nothing more.
+        assert_eq!(sim.writes.len(), 2, "writes: {:?}", sim.writes);
+        assert_eq!(sim.writes[1], (sim.writes[0].0, 0));
+    }
+
+    #[test]
+    fn matching_read_back_needs_no_resend() {
+        let mut h = Harness::start(
+            Config {
+                auto: false,
+                ..sensor_cfg()
+            },
+            present(14307),
+        );
+        h.wait("connected", |s| s.connected);
+        h.send(Cmd::Step { up: true });
+        h.wait("brighter", |s| s.level.is_some_and(|l| l > 14307));
+        h.settle();
+        let sim = h.sim();
+        assert_eq!(sim.writes.len(), 1);
+        assert_eq!(sim.opens, 1);
     }
 }
