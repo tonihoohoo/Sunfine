@@ -3,44 +3,51 @@
 Brightness hotkeys and automatic brightness (via the built-in ambient light
 sensor) for the LG UltraFine 5K display on Windows.
 
-Status: protocol verified (see `docs/PROTOCOL.md`). App v0.4.
+Status: protocol verified (see `docs/PROTOCOL.md`). App v0.5.
 
 ## Use
 
 Download `ultrafine-ctl-windows-x64.exe` from the latest GitHub Actions run
-(Artifacts) or a release and start it. A sun icon appears in the tray.
+(Artifacts) or a release and start it. A sun icon appears in the tray; click
+it for the menu. Items that do not apply right now are greyed out with the
+reason in brackets.
 
-**Left click** the icon: the settings panel. It stays open while you adjust;
-options that do not apply right now are greyed out.
-
-- **Slider** – LG brightness
-- **Brightness: Manual / Light sensor / Follow laptop**
-  - *Light sensor*: brightness follows the light level along the
-    **brightness curve**. Adjusting brightness yourself (keys or slider)
-    teaches the curve for the current light level; auto mode keeps running
-  - *Follow laptop*: the LG follows the laptop screen's brightness, whatever
-    changes it (the laptop's own auto brightness, Fn+F5/F6, Windows slider).
-    Your adjustments set the LG's offset to the laptop. With the lid closed
-    it falls back to the light sensor
-- **Light sensor: LG display / Laptop** – which sensor drives the curve; the
-  laptop sensor needs the lid open (falls back to the LG sensor)
-- **Shortcuts** – click one and press the new combination (default
-  `Ctrl+Alt+PageUp` / `PageDown` / `Home`; Fn combinations cannot be used)
-- **Popup on brightness keys**, **Fix black screen on connect**
+- **Brightness ▸** – preset levels (100 % … 5 %), tick on the current one
+- **Brighter / Darker** – default `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown`;
+  a popup like the Windows one, labelled "LG UltraFine", appears on the LG
+- **Mode ▸**
+  - *Manual* (default; the last choice is remembered)
+  - *Automatic – light sensor*: brightness follows the light level along the
+    brightness curve. Adjusting brightness yourself teaches the curve for
+    the current light level; automatic mode keeps running
+  - *Automatic – follow laptop screen*: the LG follows the laptop screen's
+    brightness, whatever changes it (the laptop's own auto brightness,
+    Fn+F5/F6, Windows slider). Your adjustments set the LG's offset to the
+    laptop. With the lid closed it uses the light sensor instead
+- **Light sensor ▸ LG display / Laptop** – the laptop sensor needs the lid
+  open (otherwise the LG sensor is used)
 - **Brightness curve…** – drag points, double-click to add, right-click to
   remove; the current light level is shown live
+- **Shortcuts ▸** – click one and press the new combination (Fn
+  combinations cannot be used; the laptop handles them in its firmware)
+- **Popup on brightness keys**, **Fix black screen on connect**,
+  **Open settings file**
 
-**Right click**: short menu (Brighter, Darker, Automatic brightness on/off,
-Settings…, Brightness curve…, Quit). Windows closes tray menus on every
-click, which is why the settings are in the panel.
+The popup and windows follow the Windows light/dark setting and accent
+colour. Changes are smoothed (about 2 s) so the brightness glides instead of
+jumping.
+
+Settings: `%APPDATA%\ultrafine-ctl\config.toml`. Editing it while the app
+runs is fine – the app picks up the change. If the file has an error the app
+uses defaults and does not overwrite it.
 
 Log file: `ultrafine-ctl.log` next to the config file.
 
 Settings live in `%APPDATA%\ultrafine-ctl\config.toml` (tray: "Open
 settings file"); fade time, smoothing and hotkey step size are only there.
 
-Windows may run a cloud security scan on first start: the exe is new and
-unsigned.
+Windows may run a cloud security scan the first time a new version starts
+(the exe is new and unsigned); later starts are fast.
 
 Build: `cargo build --release` (single static exe).
 

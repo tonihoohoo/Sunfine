@@ -10,7 +10,7 @@ mod device;
 mod display_fix;
 mod editor;
 mod laptop;
-mod panel;
+mod theme;
 mod ui;
 mod worker;
 
@@ -24,20 +24,18 @@ use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 use config::{AutoMode, Config, Hotkeys, LightSource};
 use curve::{level_to_percent, percent_to_level, Mode};
 use editor::{CurveEditor, EditorAction};
-use panel::{ModeSel, Panel, PanelAction, PanelState};
 use ui::{Action, Capture, CaptureResult, Osd, Painter};
 use worker::{Cmd, Status};
 
 #[derive(Debug)]
 enum UserEvent {
     Menu(MenuEvent),
-    Tray(TrayIconEvent),
     HotKey(GlobalHotKeyEvent),
     Status(Status),
 }
@@ -48,6 +46,9 @@ struct Shortcuts {
     up: Option<HotKey>,
     down: Option<HotKey>,
     toggle: Option<HotKey>,
+    /// Unregistered while the capture window is open (Windows would
+    /// otherwise swallow a combination that is already registered).
+    suspended: bool,
 }
 
 impl Shortcuts {
@@ -57,6 +58,7 @@ impl Shortcuts {
             up: None,
             down: None,
             toggle: None,
+            suspended: false,
         };
         for (a, spec) in [
             (Action::Up, &cfg.up),
@@ -107,7 +109,55 @@ impl Shortcuts {
         }
     }
 
+    fn all(&self) -> Vec<HotKey> {
+        [self.up, self.down, self.toggle]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
+    fn suspend(&mut self) {
+        if !self.suspended {
+            for h in self.all() {
+                let _ = self.manager.unregister(h);
+            }
+            self.suspended = true;
+        }
+    }
+
+    fn resume(&mut self) {
+        if self.suspended {
+            for h in self.all() {
+                let _ = self.manager.register(h);
+            }
+            self.suspended = false;
+        }
+    }
+
+    /// Replaces all three at once (so swapped combinations don't collide
+    /// with each other). Returns errors for the ones that failed.
+    fn set_all(&mut self, hk: &Hotkeys) -> Vec<String> {
+        self.resume();
+        for h in self.all() {
+            let _ = self.manager.unregister(h);
+        }
+        self.up = None;
+        self.down = None;
+        self.toggle = None;
+        [
+            (Action::Up, &hk.up),
+            (Action::Down, &hk.down),
+            (Action::ToggleAuto, &hk.toggle_auto),
+        ]
+        .into_iter()
+        .filter_map(|(a, spec)| self.set(a, spec).err())
+        .collect()
+    }
+
     fn action(&self, id: u32) -> Option<Action> {
+        if self.suspended {
+            return None;
+        }
         let is = |h: &Option<HotKey>| h.is_some_and(|h| h.id() == id);
         if is(&self.up) {
             Some(Action::Up)
@@ -145,11 +195,254 @@ fn main() {
     }
 }
 
-fn run() -> Result<()> {
-    let mut cfg = Config::load_or_create().unwrap_or_else(|e| {
-        log::error!("config: {e:#}; using defaults");
-        Config::default()
+/// Brightness presets in the menu (percent), top to bottom.
+const PRESETS: [u8; 11] = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10, 5];
+
+/// Native tray menu. Windows closes it after each click; items that do not
+/// apply right now are disabled (greyed) with a short reason in the text.
+struct Menus {
+    status: MenuItem,
+    brightness: Submenu,
+    presets: Vec<(u8, CheckMenuItem)>,
+    up: MenuItem,
+    down: MenuItem,
+    mode_manual: CheckMenuItem,
+    mode_sensor: CheckMenuItem,
+    mode_follow: CheckMenuItem,
+    sensor: Submenu,
+    sensor_lg: CheckMenuItem,
+    sensor_laptop: CheckMenuItem,
+    curve: MenuItem,
+    sc_up: MenuItem,
+    sc_down: MenuItem,
+    sc_auto: MenuItem,
+    sc_reset: MenuItem,
+    osd: CheckMenuItem,
+    fix: CheckMenuItem,
+    open_cfg: MenuItem,
+    quit: MenuItem,
+}
+
+impl Menus {
+    fn new() -> Result<(Self, Menu)> {
+        let presets: Vec<(u8, CheckMenuItem)> = PRESETS
+            .iter()
+            .map(|&p| (p, CheckMenuItem::new(format!("{p} %"), true, false, None)))
+            .collect();
+        let m = Self {
+            status: MenuItem::new("LG UltraFine: searching…", false, None),
+            brightness: Submenu::new("Brightness", true),
+            presets,
+            up: MenuItem::new("", true, None),
+            down: MenuItem::new("", true, None),
+            mode_manual: CheckMenuItem::new("Manual", true, false, None),
+            mode_sensor: CheckMenuItem::new("Automatic – light sensor", true, false, None),
+            mode_follow: CheckMenuItem::new("Automatic – follow laptop screen", true, false, None),
+            sensor: Submenu::new("Light sensor", true),
+            sensor_lg: CheckMenuItem::new("LG display", true, false, None),
+            sensor_laptop: CheckMenuItem::new("Laptop", true, false, None),
+            curve: MenuItem::new("Brightness curve…", true, None),
+            sc_up: MenuItem::new("", true, None),
+            sc_down: MenuItem::new("", true, None),
+            sc_auto: MenuItem::new("", true, None),
+            sc_reset: MenuItem::new("Reset to defaults", true, None),
+            osd: CheckMenuItem::new("Popup on brightness keys", true, false, None),
+            fix: CheckMenuItem::new("Fix black screen on connect", cfg!(windows), false, None),
+            open_cfg: MenuItem::new("Open settings file", true, None),
+            quit: MenuItem::new("Quit", true, None),
+        };
+        for (_, item) in &m.presets {
+            m.brightness.append(item)?;
+        }
+        m.sensor.append_items(&[&m.sensor_lg, &m.sensor_laptop])?;
+        let mode = Submenu::with_items(
+            "Mode",
+            true,
+            &[&m.mode_manual, &m.mode_sensor, &m.mode_follow],
+        )?;
+        let shortcuts = Submenu::with_items(
+            "Shortcuts",
+            true,
+            &[
+                &m.sc_up,
+                &m.sc_down,
+                &m.sc_auto,
+                &PredefinedMenuItem::separator(),
+                &m.sc_reset,
+            ],
+        )?;
+        let menu = Menu::new();
+        menu.append_items(&[
+            &m.status,
+            &PredefinedMenuItem::separator(),
+            &m.brightness,
+            &m.up,
+            &m.down,
+            &PredefinedMenuItem::separator(),
+            &mode,
+            &m.sensor,
+            &m.curve,
+            &PredefinedMenuItem::separator(),
+            &shortcuts,
+            &m.osd,
+            &m.fix,
+            &m.open_cfg,
+            &PredefinedMenuItem::separator(),
+            &m.quit,
+        ])?;
+        Ok((m, menu))
+    }
+
+    /// Brings every item in line with the settings and the device state.
+    /// Also undoes the self-toggle of check items used as radio buttons.
+    fn update(&self, cfg: &Config, s: Option<&Status>) {
+        let v = menu_view(cfg, s);
+        self.status.set_text(&v.status);
+        self.brightness.set_enabled(v.connected);
+        self.brightness.set_text(&v.brightness);
+        for (p, item) in &self.presets {
+            item.set_checked(Some(*p) == v.preset);
+        }
+        self.up.set_text(&v.up);
+        self.down.set_text(&v.down);
+        self.up.set_enabled(v.connected);
+        self.down.set_enabled(v.connected);
+        self.mode_manual.set_checked(v.mode == ModeView::Manual);
+        self.mode_sensor
+            .set_checked(v.mode == ModeView::LightSensor);
+        self.mode_follow
+            .set_checked(v.mode == ModeView::FollowLaptop);
+        self.mode_follow.set_enabled(v.follow_enabled);
+        self.mode_follow.set_text(&v.follow);
+        self.sensor.set_enabled(v.sensor_enabled);
+        self.sensor.set_text(&v.sensor);
+        self.sensor_lg.set_checked(!v.sensor_laptop);
+        self.sensor_laptop.set_checked(v.sensor_laptop);
+        self.sensor_laptop.set_enabled(v.sensor_laptop_enabled);
+        self.sensor_laptop.set_text(&v.sensor_laptop_text);
+        self.curve.set_enabled(v.curve_enabled);
+        self.sc_up.set_text(&v.shortcuts[0]);
+        self.sc_down.set_text(&v.shortcuts[1]);
+        self.sc_auto.set_text(&v.shortcuts[2]);
+        self.osd.set_checked(cfg.osd);
+        self.fix.set_checked(cfg.fix_black_screen);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModeView {
+    Manual,
+    LightSensor,
+    FollowLaptop,
+}
+
+/// What the menu shows: pure function of settings + device state (tested).
+#[derive(Debug, Clone, PartialEq)]
+struct MenuView {
+    status: String,
+    connected: bool,
+    brightness: String,
+    /// Preset to tick (nearest to the current level).
+    preset: Option<u8>,
+    up: String,
+    down: String,
+    mode: ModeView,
+    follow: String,
+    follow_enabled: bool,
+    sensor: String,
+    sensor_enabled: bool,
+    sensor_laptop: bool,
+    sensor_laptop_text: String,
+    sensor_laptop_enabled: bool,
+    curve_enabled: bool,
+    shortcuts: [String; 3],
+}
+
+fn menu_view(cfg: &Config, s: Option<&Status>) -> MenuView {
+    let connected = s.is_some_and(|s| s.connected);
+    let laptop = s.and_then(|s| s.laptop);
+    let follow_available = laptop.is_some_and(|l| l.lid_open && l.panel > 0);
+    let laptop_sensor_available = laptop.is_some_and(|l| l.lid_open && l.lux.is_some());
+    let mode = match (cfg.auto, cfg.auto_mode) {
+        (false, _) => ModeView::Manual,
+        (true, AutoMode::LightSensor) => ModeView::LightSensor,
+        (true, AutoMode::FollowLaptop) => ModeView::FollowLaptop,
+    };
+    // The light sensor is in use in light-sensor mode, and in follow mode
+    // while it falls back (lid closed / no laptop data).
+    let sensor_in_use = match mode {
+        ModeView::Manual => false,
+        ModeView::LightSensor => true,
+        ModeView::FollowLaptop => s.is_none_or(|s| s.mode == Mode::LightSensor),
+    };
+    let pct = s
+        .filter(|s| s.connected)
+        .and_then(|s| s.level)
+        .map(level_to_percent);
+    let preset = pct.and_then(|p| {
+        PRESETS
+            .iter()
+            .copied()
+            .min_by(|a, b| (*a as f64 - p).abs().total_cmp(&(*b as f64 - p).abs()))
     });
+    let follow_selected = mode == ModeView::FollowLaptop;
+    let laptop_src = cfg.light_source == LightSource::Laptop;
+    MenuView {
+        status: s
+            .map(status_text)
+            .unwrap_or_else(|| "LG UltraFine: searching…".into()),
+        connected,
+        brightness: pct
+            .map(|p| format!("Brightness: {p:.0} %"))
+            .unwrap_or_else(|| "Brightness".into()),
+        preset,
+        up: format!("Brighter\t{}", cfg.hotkeys.up),
+        down: format!("Darker\t{}", cfg.hotkeys.down),
+        mode,
+        follow: if follow_available {
+            "Automatic – follow laptop screen".into()
+        } else if follow_selected {
+            "Automatic – follow laptop screen (lid closed: using light sensor)".into()
+        } else {
+            "Automatic – follow laptop screen (needs the lid open)".into()
+        },
+        follow_enabled: follow_available || follow_selected,
+        sensor: if sensor_in_use {
+            "Light sensor".into()
+        } else {
+            "Light sensor (not used now)".into()
+        },
+        sensor_enabled: sensor_in_use,
+        sensor_laptop: laptop_src,
+        sensor_laptop_text: if laptop_sensor_available {
+            "Laptop".into()
+        } else if laptop_src {
+            "Laptop (lid closed: using LG display)".into()
+        } else {
+            "Laptop (needs the lid open)".into()
+        },
+        sensor_laptop_enabled: laptop_sensor_available || laptop_src,
+        curve_enabled: sensor_in_use,
+        shortcuts: [
+            format!("Brighter: {}…", cfg.hotkeys.up),
+            format!("Darker: {}…", cfg.hotkeys.down),
+            format!("Automatic on/off: {}…", cfg.hotkeys.toggle_auto),
+        ],
+    }
+}
+
+fn run() -> Result<()> {
+    let (mut cfg, broken) = match Config::load_or_create() {
+        Ok(c) => (c, false),
+        Err(e) => {
+            log::error!("config: {e:#}; using defaults and NOT saving until the file is fixed");
+            (Config::default(), true)
+        }
+    };
+    let mut store = Store {
+        broken,
+        mtime: Config::mtime(),
+    };
     log::info!(
         "ultrafine-ctl {} – config: {}",
         env!("CARGO_PKG_VERSION"),
@@ -202,59 +495,25 @@ fn run() -> Result<()> {
         let _ = proxy.send_event(UserEvent::Menu(e));
     }));
     let proxy = event_loop.create_proxy();
-    TrayIconEvent::set_event_handler(Some(move |e| {
-        let _ = proxy.send_event(UserEvent::Tray(e));
-    }));
-    let proxy = event_loop.create_proxy();
     GlobalHotKeyEvent::set_event_handler(Some(move |e| {
         let _ = proxy.send_event(UserEvent::HotKey(e));
     }));
 
-    // Right-click menu: short. Windows closes tray menus on every click, so
-    // all settings live in the panel (left click), which stays open.
-    let status_item = MenuItem::new("LG UltraFine: searching…", false, None);
-    let up_item = MenuItem::new("", true, None);
-    let down_item = MenuItem::new("", true, None);
-    let auto_item = CheckMenuItem::new("", true, cfg.auto, None);
-    let settings_item = MenuItem::new("Settings…", true, None);
-    let curve_item = MenuItem::new("Brightness curve…", true, None);
-    let quit_item = MenuItem::new("Quit", true, None);
-    let menu = Menu::new();
-    menu.append_items(&[
-        &status_item,
-        &PredefinedMenuItem::separator(),
-        &up_item,
-        &down_item,
-        &auto_item,
-        &PredefinedMenuItem::separator(),
-        &settings_item,
-        &curve_item,
-        &PredefinedMenuItem::separator(),
-        &quit_item,
-    ])?;
-    let relabel = {
-        let (up_item, down_item, auto_item) =
-            (up_item.clone(), down_item.clone(), auto_item.clone());
-        move |cfg: &Config| {
-            up_item.set_text(format!("Brighter\t{}", cfg.hotkeys.up));
-            down_item.set_text(format!("Darker\t{}", cfg.hotkeys.down));
-            auto_item.set_text(format!("Automatic brightness\t{}", cfg.hotkeys.toggle_auto));
-        }
-    };
-    relabel(&cfg);
+    let (menus, menu) = Menus::new()?;
+    menus.update(&cfg, None);
 
     let mut menu = Some(menu);
     let mut tray: Option<TrayIcon> = None;
     let mut worker = Some(worker);
     let painter = Rc::new(Painter::new());
     let mut osd: Option<Osd> = None;
-    let mut panel: Option<Panel> = None;
     let mut editor: Option<CurveEditor> = None;
     let mut capture: Option<Capture> = None;
     let mut last_seq = 0u64;
     let mut last_status: Option<Status> = None;
-    // Config writes are batched (slider drags change the curve many times).
+    // Config writes are batched (learning can change the curve often).
     let mut save_at: Option<Instant> = None;
+    let mut next_file_check = Instant::now() + Duration::from_secs(2);
 
     event_loop.run(move |event, target, control_flow| {
         let send = |c: Cmd| {
@@ -265,9 +524,13 @@ fn run() -> Result<()> {
         };
         let set_auto = |cfg: &mut Config, on: bool, save_at: &mut Option<Instant>| {
             cfg.auto = on;
-            auto_item.set_checked(on);
             send(Cmd::SetAuto(on));
             mark_dirty(save_at);
+        };
+        let set_mode = |cfg: &mut Config, m: AutoMode, save_at: &mut Option<Instant>| {
+            cfg.auto_mode = m;
+            send(Cmd::SetAutoMode(m));
+            set_auto(cfg, true, save_at);
         };
         let open_editor = |cfg: &Config, editor: &mut Option<CurveEditor>, st: Option<&Status>| {
             if editor.is_some() {
@@ -295,7 +558,7 @@ fn run() -> Result<()> {
             Event::NewEvents(StartCause::Init) => {
                 match TrayIconBuilder::new()
                     .with_menu(Box::new(menu.take().expect("menu")))
-                    .with_menu_on_left_click(false)
+                    .with_menu_on_left_click(true)
                     .with_tooltip("LG UltraFine")
                     .with_icon(icon())
                     .build()
@@ -307,13 +570,6 @@ fn run() -> Result<()> {
                     Ok(o) => osd = Some(o),
                     Err(e) => log::error!("popup window: {e:#}"),
                 }
-                match Panel::new(target, painter.clone()) {
-                    Ok(mut p) => {
-                        p.set_state(panel_state(&cfg, None));
-                        panel = Some(p);
-                    }
-                    Err(e) => log::error!("panel window: {e:#}"),
-                }
                 // Visual check without the display: UF_DEMO_OSD=1.
                 if std::env::var_os("UF_DEMO_OSD").is_some() {
                     if let Some(o) = osd.as_mut() {
@@ -321,33 +577,63 @@ fn run() -> Result<()> {
                     }
                 }
             }
-            Event::UserEvent(UserEvent::Tray(TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                rect,
-                ..
-            })) => {
-                if let Some(p) = panel.as_mut() {
-                    p.toggle(target, Some((rect.position, rect.size)));
-                }
-            }
             Event::UserEvent(UserEvent::Menu(e)) => {
                 let id = e.id();
-                if id == up_item.id() {
+                let m = &menus;
+                if let Some((p, _)) = m.presets.iter().find(|(_, i)| i.id() == id) {
+                    send(Cmd::SetLevel(percent_to_level(*p as f64)));
+                } else if id == m.up.id() {
                     send(Cmd::Step { up: true });
-                } else if id == down_item.id() {
+                } else if id == m.down.id() {
                     send(Cmd::Step { up: false });
-                } else if id == auto_item.id() {
-                    // Check items toggle themselves; follow them.
-                    set_auto(&mut cfg, auto_item.is_checked(), &mut save_at);
-                } else if id == settings_item.id() {
-                    if let Some(p) = panel.as_mut().filter(|p| !p.visible()) {
-                        p.toggle(target, None);
-                    }
-                } else if id == curve_item.id() {
+                } else if id == m.mode_manual.id() {
+                    set_auto(&mut cfg, false, &mut save_at);
+                } else if id == m.mode_sensor.id() {
+                    set_mode(&mut cfg, AutoMode::LightSensor, &mut save_at);
+                } else if id == m.mode_follow.id() {
+                    set_mode(&mut cfg, AutoMode::FollowLaptop, &mut save_at);
+                } else if id == m.sensor_lg.id() || id == m.sensor_laptop.id() {
+                    cfg.light_source = if id == m.sensor_laptop.id() {
+                        LightSource::Laptop
+                    } else {
+                        LightSource::Display
+                    };
+                    send(Cmd::SetSource(cfg.light_source));
+                    mark_dirty(&mut save_at);
+                } else if id == m.curve.id() {
                     open_editor(&cfg, &mut editor, last_status.as_ref());
-                } else if id == quit_item.id() {
-                    save(&cfg);
+                } else if id == m.sc_up.id() {
+                    shortcuts.suspend();
+                    start_capture(Action::Up, &cfg, &mut capture);
+                } else if id == m.sc_down.id() {
+                    shortcuts.suspend();
+                    start_capture(Action::Down, &cfg, &mut capture);
+                } else if id == m.sc_auto.id() {
+                    shortcuts.suspend();
+                    start_capture(Action::ToggleAuto, &cfg, &mut capture);
+                } else if id == m.sc_reset.id() {
+                    for e in shortcuts.set_all(&Hotkeys::default()) {
+                        log::warn!("{e}");
+                    }
+                    cfg.hotkeys = Hotkeys::default();
+                    mark_dirty(&mut save_at);
+                } else if id == m.osd.id() {
+                    cfg.osd = !cfg.osd;
+                    mark_dirty(&mut save_at);
+                } else if id == m.fix.id() {
+                    cfg.fix_black_screen = !cfg.fix_black_screen;
+                    fix_enabled.store(cfg.fix_black_screen, Ordering::Relaxed);
+                    mark_dirty(&mut save_at);
+                } else if id == m.open_cfg.id() {
+                    store.save(&cfg);
+                    save_at = None;
+                    if let Some(p) = Config::path() {
+                        open_file(&p);
+                    }
+                } else if id == m.quit.id() {
+                    if save_at.is_some() {
+                        store.save(&cfg);
+                    }
                     send(Cmd::Quit);
                     if let Some(w) = worker.take() {
                         let _ = w.join();
@@ -356,6 +642,7 @@ fn run() -> Result<()> {
                     *control_flow = ControlFlow::Exit;
                     return;
                 }
+                menus.update(&cfg, last_status.as_ref());
             }
             Event::UserEvent(UserEvent::HotKey(e)) if e.state == HotKeyState::Pressed => {
                 match shortcuts.action(e.id) {
@@ -367,15 +654,11 @@ fn run() -> Result<()> {
                     }
                     None => {}
                 }
+                menus.update(&cfg, last_status.as_ref());
             }
             Event::UserEvent(UserEvent::Status(s)) => {
-                let text = status_text(&s);
-                status_item.set_text(&text);
-                up_item.set_enabled(s.connected);
-                down_item.set_enabled(s.connected);
-                curve_item.set_enabled(cfg.auto && s.mode == Mode::LightSensor);
                 if let Some(t) = &tray {
-                    let _ = t.set_tooltip(Some(&text));
+                    let _ = t.set_tooltip(Some(&status_text(&s)));
                 }
                 // The worker learns (sync offset, curve points): persist.
                 if s.sync_cal != cfg.sync_cal || s.curve != cfg.curve {
@@ -396,60 +679,12 @@ fn run() -> Result<()> {
                 if let Some(e) = editor.as_mut() {
                     e.update(s.lux, &s.curve);
                 }
+                menus.update(&cfg, Some(&s));
                 last_status = Some(s);
             }
             Event::WindowEvent {
                 window_id, event, ..
             } => {
-                if let Some(p) = panel.as_mut().filter(|p| p.id() == window_id) {
-                    match p.handle(&event) {
-                        Some(PanelAction::SetPercent(pct)) => {
-                            send(Cmd::SetLevel(percent_to_level(pct)))
-                        }
-                        Some(PanelAction::SetMode(ModeSel::Manual)) => {
-                            set_auto(&mut cfg, false, &mut save_at)
-                        }
-                        Some(PanelAction::SetMode(m)) => {
-                            cfg.auto_mode = if m == ModeSel::FollowLaptop {
-                                AutoMode::FollowLaptop
-                            } else {
-                                AutoMode::LightSensor
-                            };
-                            send(Cmd::SetAutoMode(cfg.auto_mode));
-                            set_auto(&mut cfg, true, &mut save_at);
-                        }
-                        Some(PanelAction::SetSensorLaptop(laptop)) => {
-                            cfg.light_source = if laptop {
-                                LightSource::Laptop
-                            } else {
-                                LightSource::Display
-                            };
-                            send(Cmd::SetSource(cfg.light_source));
-                            mark_dirty(&mut save_at);
-                        }
-                        Some(PanelAction::EditShortcut(a)) => start_capture(a, &cfg, &mut capture),
-                        Some(PanelAction::ToggleOsd) => {
-                            cfg.osd = !cfg.osd;
-                            mark_dirty(&mut save_at);
-                        }
-                        Some(PanelAction::ToggleFix) => {
-                            cfg.fix_black_screen = !cfg.fix_black_screen;
-                            fix_enabled.store(cfg.fix_black_screen, Ordering::Relaxed);
-                            mark_dirty(&mut save_at);
-                        }
-                        Some(PanelAction::EditCurve) => {
-                            open_editor(&cfg, &mut editor, last_status.as_ref())
-                        }
-                        Some(PanelAction::OpenSettingsFile) => {
-                            save(&cfg);
-                            save_at = None;
-                            if let Some(p) = Config::path() {
-                                open_file(&p);
-                            }
-                        }
-                        None => {}
-                    }
-                }
                 if let Some(e) = editor.as_mut().filter(|e| e.id() == window_id) {
                     match e.handle(&event) {
                         Some(EditorAction::Changed(pts)) => {
@@ -463,17 +698,35 @@ fn run() -> Result<()> {
                 }
                 if let Some(c) = capture.as_mut().filter(|c| c.id() == window_id) {
                     match c.handle(&event) {
-                        Some(CaptureResult::Cancel) => capture = None,
+                        Some(CaptureResult::Cancel) => {
+                            capture = None;
+                            shortcuts.resume();
+                        }
                         Some(CaptureResult::Chosen(spec)) => {
                             let a = c.action;
-                            match shortcuts.set(a, &spec) {
-                                Ok(()) => {
-                                    set_spec(&mut cfg, a, spec);
-                                    relabel(&cfg);
+                            let mut new = cfg.clone();
+                            set_spec(&mut new, a, spec.clone());
+                            let clash = [Action::Up, Action::Down, Action::ToggleAuto]
+                                .into_iter()
+                                .find(|&o| o != a && spec_of(&cfg, o).eq_ignore_ascii_case(&spec));
+                            if let Some(o) = clash {
+                                c.set_message(&format!(
+                                    "{spec} is already used for {}.",
+                                    o.label()
+                                ));
+                            } else {
+                                let errors = shortcuts.set_all(&new.hotkeys);
+                                if errors.is_empty() {
+                                    cfg.hotkeys = new.hotkeys;
+                                    menus.update(&cfg, last_status.as_ref());
                                     mark_dirty(&mut save_at);
                                     capture = None;
+                                } else {
+                                    // Put the old ones back and keep asking.
+                                    shortcuts.set_all(&cfg.hotkeys);
+                                    shortcuts.suspend();
+                                    c.set_message(&errors.join(" "));
                                 }
-                                Err(msg) => c.set_message(&msg),
                             }
                         }
                         None => {}
@@ -483,9 +736,6 @@ fn run() -> Result<()> {
             Event::RedrawRequested(id) => {
                 if let Some(o) = osd.as_mut().filter(|o| o.id() == id) {
                     o.draw();
-                }
-                if let Some(p) = panel.as_mut().filter(|p| p.id() == id && p.visible()) {
-                    p.draw();
                 }
                 if let Some(e) = editor.as_mut().filter(|e| e.id() == id) {
                     e.draw();
@@ -497,60 +747,52 @@ fn run() -> Result<()> {
             _ => {}
         }
 
-        // Keep the panel in sync with settings and device state.
-        if let Some(p) = panel.as_mut() {
-            p.set_state(panel_state(&cfg, last_status.as_ref()));
-        }
-
         let now = Instant::now();
+        // Edited by hand while running? Take the file's version.
+        if now >= next_file_check {
+            next_file_check = now + Duration::from_secs(2);
+            if store.changed_on_disk() {
+                store.mtime = Config::mtime();
+                match Config::load() {
+                    Ok(Some(new)) => {
+                        log::info!("settings file changed on disk; reloaded");
+                        for e in shortcuts.set_all(&new.hotkeys) {
+                            log::warn!("{e}");
+                        }
+                        fix_enabled.store(new.fix_black_screen, Ordering::Relaxed);
+                        send(Cmd::Reload(Box::new(new.clone())));
+                        cfg = new;
+                        store.broken = false;
+                        save_at = None;
+                        menus.update(&cfg, last_status.as_ref());
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        log::error!(
+                            "settings file has an error, not saving until it is fixed: {e:#}"
+                        );
+                        store.broken = true;
+                    }
+                }
+            }
+        }
         if save_at.is_some_and(|t| now >= t) {
-            save(&cfg);
+            store.save(&cfg);
             save_at = None;
         }
-        let wake = [osd.as_mut().and_then(|o| o.tick(now)), save_at]
-            .into_iter()
-            .flatten()
-            .min();
+        let wake = [
+            osd.as_mut().and_then(|o| o.tick(now)),
+            save_at,
+            Some(next_file_check),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         *control_flow = match wake {
             Some(t) => ControlFlow::WaitUntil(t),
             None => ControlFlow::Wait,
         };
     });
-}
-
-fn panel_state(cfg: &Config, s: Option<&Status>) -> PanelState {
-    let laptop = s.and_then(|s| s.laptop);
-    let follow_available = laptop.is_some_and(|l| l.lid_open && l.panel > 0);
-    let laptop_sensor_available = laptop.is_some_and(|l| l.lid_open && l.lux.is_some());
-    let mode = match (cfg.auto, cfg.auto_mode) {
-        (false, _) => ModeSel::Manual,
-        (true, AutoMode::LightSensor) => ModeSel::LightSensor,
-        (true, AutoMode::FollowLaptop) => ModeSel::FollowLaptop,
-    };
-    // Light-sensor mode is in effect also when "follow laptop" falls back
-    // (lid closed).
-    let sensor_mode = s
-        .map(|s| s.mode == Mode::LightSensor)
-        .unwrap_or(mode == ModeSel::LightSensor)
-        && cfg.auto;
-    PanelState {
-        connected: s.is_some_and(|s| s.connected),
-        percent: s.and_then(|s| s.level).map(level_to_percent).unwrap_or(0.0),
-        status: s.map(panel_status).unwrap_or_default(),
-        mode,
-        follow_available,
-        sensor_laptop: cfg.light_source == LightSource::Laptop,
-        sensor_enabled: sensor_mode,
-        laptop_sensor_available,
-        curve_enabled: sensor_mode,
-        shortcuts: [
-            cfg.hotkeys.up.clone(),
-            cfg.hotkeys.down.clone(),
-            cfg.hotkeys.toggle_auto.clone(),
-        ],
-        osd: cfg.osd,
-        fix_black: cfg.fix_black_screen,
-    }
 }
 
 fn panel_status(s: &Status) -> String {
@@ -620,7 +862,7 @@ fn init_logging() {
         builder.format(move |buf, rec| {
             let line = format!(
                 "{} {:<5} {}",
-                buf.timestamp_seconds(),
+                buf.timestamp_millis(),
                 rec.level(),
                 rec.args()
             );
@@ -633,9 +875,31 @@ fn init_logging() {
     builder.init();
 }
 
-fn save(cfg: &Config) {
-    if let Err(e) = cfg.save() {
-        log::warn!("saving config: {e:#}");
+/// Writes the settings file, but never over a file the user broke or over
+/// edits made since we last read or wrote it.
+struct Store {
+    broken: bool,
+    mtime: Option<std::time::SystemTime>,
+}
+
+impl Store {
+    fn changed_on_disk(&self) -> bool {
+        Config::mtime() != self.mtime
+    }
+
+    fn save(&mut self, cfg: &Config) {
+        if self.broken {
+            log::warn!("not saving: the settings file has an error (fix it or delete it)");
+            return;
+        }
+        if self.changed_on_disk() {
+            log::info!("settings file changed on disk; not overwriting it");
+            return;
+        }
+        match cfg.save() {
+            Ok(()) => self.mtime = Config::mtime(),
+            Err(e) => log::warn!("saving config: {e:#}"),
+        }
     }
 }
 
@@ -689,4 +953,185 @@ fn icon() -> Icon {
         }
     }
     Icon::from_rgba(rgba, N, N).expect("valid icon")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::laptop::Laptop;
+
+    fn status(mode: Mode, laptop: Option<Laptop>, level: u32) -> Status {
+        Status {
+            connected: true,
+            light_sensor: true,
+            level: Some(level),
+            lux: Some(18.0),
+            auto: mode != Mode::Manual,
+            mode,
+            source: LightSource::Display,
+            laptop,
+            sync_cal: None,
+            curve: config::default_curve(),
+            manual_seq: 0,
+        }
+    }
+
+    fn lid(open: bool, lux: Option<f64>) -> Option<Laptop> {
+        Some(Laptop {
+            panel: 60,
+            adaptive: true,
+            lid_open: open,
+            lux,
+        })
+    }
+
+    #[test]
+    fn disconnected_greys_brightness() {
+        let v = menu_view(&Config::default(), None);
+        assert!(!v.connected);
+        assert_eq!(v.preset, None);
+        assert_eq!(v.brightness, "Brightness");
+        let mut s = status(Mode::LightSensor, None, 14307);
+        s.connected = false;
+        let v = menu_view(&Config::default(), Some(&s));
+        assert!(!v.connected);
+        assert_eq!(v.preset, None);
+    }
+
+    #[test]
+    fn preset_tick_is_nearest() {
+        let cfg = Config {
+            auto: false,
+            ..Config::default()
+        };
+        for (level, want) in [
+            (14307, 30),
+            (54000, 100),
+            (100, 5),
+            (27000, 50),
+            (2000, 5),
+            (4000, 5),
+            (4500, 10),
+        ] {
+            let v = menu_view(&cfg, Some(&status(Mode::Manual, None, level)));
+            assert_eq!(v.preset, Some(want), "level {level}");
+        }
+    }
+
+    #[test]
+    fn manual_mode_greys_sensor_and_curve() {
+        let cfg = Config {
+            auto: false,
+            ..Config::default()
+        };
+        let v = menu_view(
+            &cfg,
+            Some(&status(Mode::Manual, lid(true, Some(10.0)), 14307)),
+        );
+        assert_eq!(v.mode, ModeView::Manual);
+        assert!(!v.sensor_enabled);
+        assert!(!v.curve_enabled);
+        assert!(v.follow_enabled, "can switch to follow with lid open");
+    }
+
+    #[test]
+    fn follow_mode_states() {
+        let cfg = Config {
+            auto: true,
+            auto_mode: AutoMode::FollowLaptop,
+            ..Config::default()
+        };
+        // Following: sensor not used.
+        let v = menu_view(
+            &cfg,
+            Some(&status(Mode::LaptopSync, lid(true, None), 14307)),
+        );
+        assert_eq!(v.mode, ModeView::FollowLaptop);
+        assert!(!v.sensor_enabled && !v.curve_enabled);
+        assert_eq!(v.follow, "Automatic – follow laptop screen");
+        // Lid closed: falls back, sensor + curve usable, follow stays selectable.
+        let v = menu_view(
+            &cfg,
+            Some(&status(Mode::LightSensor, lid(false, None), 14307)),
+        );
+        assert!(v.sensor_enabled && v.curve_enabled);
+        assert!(v.follow_enabled);
+        assert!(v.follow.contains("lid closed"));
+    }
+
+    #[test]
+    fn follow_unavailable_when_not_selected() {
+        let cfg = Config {
+            auto: true,
+            auto_mode: AutoMode::LightSensor,
+            ..Config::default()
+        };
+        let v = menu_view(
+            &cfg,
+            Some(&status(Mode::LightSensor, lid(false, None), 14307)),
+        );
+        assert!(!v.follow_enabled);
+        assert!(v.follow.contains("needs the lid open"));
+        let v = menu_view(&cfg, Some(&status(Mode::LightSensor, None, 14307)));
+        assert!(!v.follow_enabled, "no laptop panel (desktop)");
+    }
+
+    #[test]
+    fn laptop_sensor_option() {
+        let cfg = Config {
+            auto: true,
+            auto_mode: AutoMode::LightSensor,
+            ..Config::default()
+        };
+        let v = menu_view(
+            &cfg,
+            Some(&status(Mode::LightSensor, lid(true, Some(5.0)), 14307)),
+        );
+        assert!(v.sensor_laptop_enabled && !v.sensor_laptop);
+        let v = menu_view(
+            &cfg,
+            Some(&status(Mode::LightSensor, lid(true, None), 14307)),
+        );
+        assert!(!v.sensor_laptop_enabled, "no laptop sensor");
+        let cfg = Config {
+            light_source: LightSource::Laptop,
+            ..cfg
+        };
+        let v = menu_view(
+            &cfg,
+            Some(&status(Mode::LightSensor, lid(false, Some(5.0)), 14307)),
+        );
+        assert!(v.sensor_laptop && v.sensor_laptop_enabled);
+        assert!(v.sensor_laptop_text.contains("lid closed"));
+    }
+
+    #[test]
+    fn status_texts() {
+        let s = status(Mode::LightSensor, None, 14307);
+        assert_eq!(
+            status_text(&s),
+            "LG UltraFine: 26 % (auto · 18 lx (LG sensor))"
+        );
+        let mut s = status(Mode::LaptopSync, lid(true, None), 27000);
+        assert_eq!(
+            status_text(&s),
+            "LG UltraFine: 50 % (follows laptop (60 %))"
+        );
+        s.connected = false;
+        assert_eq!(status_text(&s), "LG UltraFine: not connected");
+        let mut s = status(Mode::LightSensor, None, 14307);
+        s.light_sensor = false;
+        assert!(status_text(&s).contains("LG sensor not readable"));
+    }
+
+    #[test]
+    fn shortcut_slots_round_trip() {
+        let mut cfg = Config::default();
+        for a in [Action::Up, Action::Down, Action::ToggleAuto] {
+            set_spec(&mut cfg, a, format!("ctrl+F{}", a as u8 + 1));
+        }
+        assert_eq!(spec_of(&cfg, Action::Up), "ctrl+F1");
+        assert_eq!(spec_of(&cfg, Action::Down), "ctrl+F2");
+        assert_eq!(spec_of(&cfg, Action::ToggleAuto), "ctrl+F3");
+    }
 }

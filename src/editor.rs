@@ -15,11 +15,11 @@ use tiny_skia::{Color, FillRule, PathBuilder, Pixmap, Stroke, StrokeDash, Transf
 
 use crate::config::{default_curve, CurvePoint};
 use crate::curve::{curve_percent, lux_x, x_lux, LUX_MAX};
+use crate::theme::Palette;
 use crate::ui::{new_surface, paint, present, rounded_rect, Painter, Surface};
 
 const W: f64 = 640.0;
 const H: f64 = 440.0;
-const ACCENT: [u8; 3] = [0x4c, 0xc2, 0xff];
 
 pub enum EditorAction {
     Changed(Vec<CurvePoint>),
@@ -165,6 +165,11 @@ impl CurveEditor {
         let (plot, w, h, s) = self.geometry();
         match event {
             WindowEvent::CloseRequested => Some(EditorAction::Close),
+            // A release outside the window never arrives; don't keep dragging.
+            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false) => {
+                self.drag = None;
+                None
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.physical_key == KeyCode::Escape
                     && event.state == ElementState::Pressed =>
@@ -173,24 +178,9 @@ impl CurveEditor {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as f32, position.y as f32);
-                if let Some(i) = self.drag {
+                if let Some(i) = self.drag.filter(|&i| i < self.points.len()) {
                     let (cx, cy) = self.cursor;
-                    // Keep the point between its neighbours on the lux axis.
-                    let lo = if i > 0 {
-                        lux_x(self.points[i - 1].lux) + 0.03
-                    } else {
-                        0.0
-                    };
-                    let hi = self
-                        .points
-                        .get(i + 1)
-                        .map(|p| lux_x(p.lux) - 0.03)
-                        .unwrap_or(Plot::xmax());
-                    let x = lux_x(plot.lux_at(cx)).clamp(lo, hi.max(lo));
-                    self.points[i] = CurvePoint {
-                        lux: x_lux(x),
-                        percent: plot.pct_at(cy).round(),
-                    };
+                    move_point(&mut self.points, i, plot.lux_at(cx), plot.pct_at(cy));
                     self.draw();
                     return Some(EditorAction::Changed(self.points.clone()));
                 }
@@ -259,6 +249,11 @@ impl CurveEditor {
                 button: MouseButton::Right,
                 ..
             } => {
+                // Removing while dragging would leave `drag` pointing at the
+                // wrong (or a missing) point.
+                if self.drag.is_some() {
+                    return None;
+                }
                 if let Some(i) = self.hit_point(&plot, s) {
                     if self.points.len() > 2 {
                         self.points.remove(i);
@@ -284,6 +279,7 @@ impl CurveEditor {
             &self.points,
             self.lux_now,
             self.hover,
+            &crate::theme::for_app(&self.window),
         ) else {
             return;
         };
@@ -291,6 +287,29 @@ impl CurveEditor {
             log::debug!("editor draw: {e:#}");
         }
     }
+}
+
+/// Moves point `i` to (`lux`, `percent`), kept between its neighbours on
+/// the lux axis (so the order never changes) and inside the axes.
+pub(crate) fn move_point(points: &mut [CurvePoint], i: usize, lux: f64, percent: f64) {
+    if i >= points.len() {
+        return;
+    }
+    const GAP: f64 = 0.03;
+    let lo = if i > 0 {
+        lux_x(points[i - 1].lux) + GAP
+    } else {
+        0.0
+    };
+    let hi = points
+        .get(i + 1)
+        .map(|p| lux_x(p.lux) - GAP)
+        .unwrap_or(Plot::xmax());
+    let x = lux_x(lux).clamp(lo.min(Plot::xmax()), hi.max(lo).min(Plot::xmax()));
+    points[i] = CurvePoint {
+        lux: x_lux(x),
+        percent: percent.clamp(0.0, 100.0).round(),
+    };
 }
 
 fn line(pm: &mut Pixmap, x0: f32, y0: f32, x1: f32, y1: f32, rgb: [u8; 3], stroke: &Stroke) {
@@ -302,6 +321,7 @@ fn line(pm: &mut Pixmap, x0: f32, y0: f32, x1: f32, y1: f32, rgb: [u8; 3], strok
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_editor(
     p: &Painter,
     width: u32,
@@ -310,14 +330,16 @@ pub fn render_editor(
     points: &[CurvePoint],
     lux_now: Option<f64>,
     hover: Option<usize>,
+    pal: &Palette,
 ) -> Option<Pixmap> {
     let mut pm = Pixmap::new(width.max(1), height.max(1))?;
     let (w, h) = (width as f32, height as f32);
     let plot = Plot::new(w, h, s);
-    let white = [0xff, 0xff, 0xff];
-    let grey = [0x9a, 0x9a, 0x9a];
-    let grid = [0x3a, 0x3a, 0x3a];
-    pm.fill(Color::from_rgba8(0x20, 0x20, 0x20, 255));
+    let white = pal.text;
+    let grey = pal.subtext;
+    let grid = pal.grid;
+    let [r, g, b] = pal.window;
+    pm.fill(Color::from_rgba8(r, g, b, 255));
 
     p.text(
         &mut pm,
@@ -382,7 +404,7 @@ pub fn render_editor(
             plot.px(lux) - lw / 2.0,
             plot.y1 + 34.0 * s,
             10.0 * s,
-            [0x70, 0x70, 0x70],
+            pal.faint,
         );
     }
 
@@ -404,7 +426,7 @@ pub fn render_editor(
             line_join: tiny_skia::LineJoin::Round,
             ..Default::default()
         };
-        pm.stroke_path(&path, &paint(ACCENT), &st, Transform::identity(), None);
+        pm.stroke_path(&path, &paint(pal.accent), &st, Transform::identity(), None);
     }
 
     // Current light level.
@@ -416,7 +438,7 @@ pub fn render_editor(
             dash: StrokeDash::new(vec![4.0 * s, 4.0 * s], 0.0),
             ..Default::default()
         };
-        line(&mut pm, x, plot.y0, x, plot.y1, [0xb0, 0xb0, 0xb0], &dash);
+        line(&mut pm, x, plot.y0, x, plot.y1, pal.subtext, &dash);
         if let Some(c) = PathBuilder::from_circle(x, plot.py(pct), 4.0 * s) {
             pm.fill_path(
                 &c,
@@ -439,7 +461,7 @@ pub fn render_editor(
         if let Some(c) = PathBuilder::from_circle(x, y, r + 1.5 * s) {
             pm.fill_path(
                 &c,
-                &paint(white),
+                &paint(pal.window),
                 FillRule::Winding,
                 Transform::identity(),
                 None,
@@ -448,7 +470,7 @@ pub fn render_editor(
         if let Some(c) = PathBuilder::from_circle(x, y, r) {
             pm.fill_path(
                 &c,
-                &paint(ACCENT),
+                &paint(pal.accent),
                 FillRule::Winding,
                 Transform::identity(),
                 None,
@@ -476,7 +498,7 @@ pub fn render_editor(
         .map(|((r, l), p)| (r, l, p))
     {
         if let Some(r) = rounded_rect(bx, by, bw, bh, 5.0 * s) {
-            let fill = if primary { ACCENT } else { [0x2d, 0x2d, 0x2d] };
+            let fill = if primary { pal.accent } else { pal.button };
             pm.fill_path(
                 &r,
                 &paint(fill),
@@ -487,14 +509,14 @@ pub fn render_editor(
             if !primary {
                 pm.stroke_path(
                     &r,
-                    &paint([0x50, 0x50, 0x50]),
+                    &paint(pal.button_border),
                     &thin,
                     Transform::identity(),
                     None,
                 );
             }
         }
-        let fg = if primary { [0, 0, 0] } else { white };
+        let fg = if primary { pal.on_accent } else { white };
         let lw = p.text_width(label, 13.0 * s);
         p.text(
             &mut pm,
@@ -512,22 +534,83 @@ pub fn render_editor(
 mod tests {
     use super::*;
 
+    #[test]
+    fn plot_mapping_round_trips() {
+        let p = Plot::new(1280.0, 880.0, 2.0);
+        for lux in [0.0, 1.0, 18.0, 300.0, 5000.0, 10000.0] {
+            let back = p.lux_at(p.px(lux));
+            assert!((back - lux).abs() < 1e-6 * lux.max(1.0), "{lux} -> {back}");
+        }
+        for pct in [0.0, 27.0, 100.0] {
+            assert!((p.pct_at(p.py(pct)) - pct).abs() < 1e-4);
+        }
+        // Outside the plot clamps.
+        assert_eq!(p.pct_at(-1000.0), 100.0);
+        assert_eq!(p.pct_at(1e6), 0.0);
+        assert_eq!(p.lux_at(-1e6), 0.0);
+        assert!((p.lux_at(1e6) - LUX_MAX).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dragging_keeps_order_and_bounds() {
+        let mut pts = default_curve(); // 1, 20, 300, 5000 lx
+        move_point(&mut pts, 1, 1e6, 150.0); // way right and up
+        assert!(pts[1].lux < pts[2].lux);
+        assert_eq!(pts[1].percent, 100.0);
+        move_point(&mut pts, 1, 0.0, -5.0); // way left and down
+        assert!(pts[1].lux > pts[0].lux);
+        assert_eq!(pts[1].percent, 0.0);
+        move_point(&mut pts, 0, 0.0, 10.0);
+        assert_eq!(pts[0].lux, 0.0);
+        move_point(&mut pts, 3, 1e9, 50.0);
+        assert!(pts[3].lux <= LUX_MAX + 1e-9);
+        move_point(&mut pts, 99, 1.0, 1.0); // out of range: ignored
+        for w in pts.windows(2) {
+            assert!(w[0].lux < w[1].lux, "{pts:?}");
+        }
+    }
+
+    #[test]
+    fn dragging_between_crowded_neighbours_does_not_panic() {
+        let mut pts = vec![
+            CurvePoint {
+                lux: 10.0,
+                percent: 10.0,
+            },
+            CurvePoint {
+                lux: 10.2,
+                percent: 20.0,
+            },
+            CurvePoint {
+                lux: 10.4,
+                percent: 30.0,
+            },
+        ];
+        move_point(&mut pts, 1, 5000.0, 50.0);
+        assert!(pts[1].lux.is_finite());
+    }
+
     /// Renders the editor at 2x: target/editor_preview.png
     #[test]
     fn editor_preview() {
-        let pm = render_editor(
-            &Painter::new(),
-            (W * 2.0) as u32,
-            (H * 2.0) as u32,
-            2.0,
-            &default_curve(),
-            Some(18.0),
-            Some(1),
-        )
-        .unwrap();
-        pm.save_png(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/editor_preview.png"),
-        )
-        .unwrap();
+        for (dark, name) in [(true, "dark"), (false, "light")] {
+            let pal = crate::theme::palette(dark, [0x00, 0x78, 0xd4]);
+            let pm = render_editor(
+                &Painter::new(),
+                (W * 2.0) as u32,
+                (H * 2.0) as u32,
+                2.0,
+                &default_curve(),
+                Some(18.0),
+                Some(1),
+                &pal,
+            )
+            .unwrap();
+            pm.save_png(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("target/editor_preview_{name}.png")),
+            )
+            .unwrap();
+        }
     }
 }

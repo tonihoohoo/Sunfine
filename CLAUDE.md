@@ -59,6 +59,16 @@ the panel (stays open, invalid options greyed via `PanelState`); short
 right-click menu (native menus always close on click); popup fix: no
 click-through on Windows (tao makes it WS_EX_LAYERED -> grey box); log file
 `ultrafine-ctl.log` next to the config.
+v0.5: back to the native tray menu (panel removed – custom slider felt bad;
+Windows closes tray menus on click, accepted); Brightness presets submenu;
+`menu_view()` pure + tested; manual mode default; light/dark + accent theme
+(`src/theme.rs`, registry SystemUsesLightTheme / AppsUseLightTheme / DWM
+AccentColor); time-based smoothing (`Smooth`, `Controller::tick` every
+worker loop) with relative thresholds; sync calibrates on activation, 0 %
+panel is valid; laptop lux held 5 s on read errors; settings file reloaded
+when edited, never overwritten while broken/changed (`Store`); shortcuts
+suspended during capture, reset registers all at once; worker testable via
+`Device`/`Connector` traits with a simulated display (64 tests).
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 
@@ -78,8 +88,11 @@ the LG too.
 
 - Curve of user points (lux, %), linear between points on a log10(lux+1)
   axis, flat outside. Default (1,2) (20,30) (300,65) (5000,100).
-- Smooth: EMA on lux, apply only if target differs > 3 points, use the
-  device's own transition field (800 ms) for fades.
+- Smoothing is time-based (tau `smoothing_seconds`, 2 s, on the log-lux
+  axis; laptop panel 1 s) and completes while sensors are quiet (the LG
+  sensor only reports changes). Thresholds are relative to the current
+  level: 12 % while moving, 8 % once settled (LG sensor noise is ±2 lx);
+  sync 6 % / 2.5 %. Device fade field 800 ms.
 - Manual change (hotkey/slider) in auto mode: no pause; the nearest curve
   point within ~2x lux moves to (current lux, chosen %), else a point is
   inserted; neighbours are clamped so the curve stays non-decreasing.
