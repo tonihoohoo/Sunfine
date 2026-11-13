@@ -15,6 +15,37 @@ Raw logs in `docs/logs/`.
 | 1 | 0x0080 Monitor | 0x01 | brightness (VESA 0x82 / 0x10) |
 | 2 | 0x0020 Sensor | 0x41 Ambient Light | illuminance |
 
+## Vendor iface 0 = "HID I2C" bridge (NXP LPCUSBSIO)
+
+Evidence: LG Screen Manager (macOS, v3.05) strings: `043e:9a40`,
+`LPC_HANDLE`, `I2C_Close`, `I2C_ResetCommand`, `NXP_Slave_Devices`, "Ask
+current version of FW through DDCCI". The API names match NXP's LPCUSBSIO
+library; protocol from NXP LPCOpen `usbd_rom_hid_sio` (`lpcusbsio_i2c.h`).
+**Not yet verified against the device.**
+
+64-byte in/out reports, no report ID. Header:
+
+```
+u8 length (header + data)   u8 transId   u8 sesId (= I2C port)   u8 req|resp
+```
+
+| req | name | data |
+|---|---|---|
+| 0x00 | RESET | – |
+| 0x01 | INIT_PORT | u32 busSpeed, u32 options |
+| 0x02 | DEINIT_PORT | – |
+| 0x03 | DEVICE_WRITE | u16 len, u8 options, u8 addr7, bytes |
+| 0x04 | DEVICE_READ | u16 len, u8 options, u8 addr7 |
+| 0x05 | DEVICE_XFER | u8 txLen, u8 rxLen, u8 options, u8 addr7, tx bytes |
+| 0xF0 | DEV_INFO | -> u8 i2cPorts, u8 spiPorts, u8 gpioPorts, u8 -, u32 ver, str |
+
+Options: 0x01 START, 0x02 STOP, 0x04 BREAK_ON_NACK, 0x08 NACK_LAST_BYTE.
+Responses: 0x00 OK, 0x02 NAK, 0x04 SLAVE_NAK, 0x11 INVALID_CMD, ...
+
+Idea: the ALS chip may sit on this I2C bus (common ALS addresses: 0x10,
+0x23, 0x29, 0x39, 0x44-0x47, 0x49, 0x4A/0x4B); DDC/CI is 0x37, EDID 0x50.
+Probe: `uf_probe.py i2c-info`, `i2c-scan [--init]` (reads only).
+
 ## Brightness (iface 1)
 
 Feature report, **no report ID** (hidapi: prefix with `0x00`).
