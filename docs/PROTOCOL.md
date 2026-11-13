@@ -178,8 +178,9 @@ Let me pick -> "HID-compliant device". Afterwards hidapi lists iface 2 as
 usage page 0x20 / usage 0x41, product string **"HID ALS"**, and `uf_probe.py
 als` streams exactly the same 6-byte reports as on macOS (dim room 18-19 lux,
 covered 0, flashlight up to ~64000; flags 0x40 rising / 0x80 falling).
-Caveats: the setting is per device instance (another port may need it
-again); Windows Update could restore the sensor driver. Revert: pick "HID
+Caveats: the setting is per device instance (survived a port change on
+2026-11-13, but a new instance id would need it again); Windows Update could
+restore the sensor driver. Revert: pick "HID
 Ambient Light Sensor" again or uninstall + scan for hardware changes.
 
 ## Windows state checks and laptop brightness (win_check, 2026-11-13)
@@ -187,8 +188,14 @@ Ambient Light Sensor" again or uninstall + scan for hardware changes.
 `docs/logs/win_check_1.log`, normal (working) state:
 
 - Display: LG active in both live and persisted (`QDC_DATABASE_CURRENT`,
-  topology 4 = extend) config -> verdict OK. The FAULT branch (persisted
-  active, live inactive) is still unverified – run `win_check` while black.
+  topology 4 = extend) config -> verdict OK.
+- **Black state verified** (`docs/logs/win_check_black.log`, after moving the
+  cable to the other port): live config has no active LG path (LG target
+  available on 4 sources, all inactive), persisted config has it active ->
+  verdict **FAULT**. So "persisted active && live inactive" reliably
+  separates the fault from a user choice.
+- After the port change the sensor kept `input.inf` – same HID instance id
+  (`...MI_02\C&4D86B2&0&0000`), so the driver swap survived the port move.
 - Sensor: MI_02 on `input.inf`, status OK -> readable.
 - Laptop panel (AUO499A): `WmiMonitorBrightness` 66 %, 101 levels, readable
   without admin. ADAPTBRIGHT = 1 (AC and DC). Laptop ALS ~10 lux where the
