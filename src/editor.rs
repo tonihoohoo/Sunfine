@@ -51,8 +51,8 @@ impl CurveKind {
     }
     fn window_title(self) -> &'static str {
         match self {
-            CurveKind::Light => "LG UltraFine – brightness curve (light sensor)",
-            CurveKind::Follow => "LG UltraFine – brightness curve (follow laptop)",
+            CurveKind::Light => "Sunfine – brightness curve (light sensor)",
+            CurveKind::Follow => "Sunfine – brightness curve (follow laptop)",
         }
     }
     /// Grid lines with labels on the input axis.

@@ -2112,6 +2112,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 
 [[package]]
+name = "sunfine"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "directories",
+ "env_logger",
+ "fontdue",
+ "global-hotkey",
+ "hidapi",
+ "log",
+ "serde",
+ "softbuffer",
+ "tao",
+ "tiny-skia",
+ "toml 1.2.1+spec-1.1.0",
+ "tray-icon",
+ "windows",
+ "wmi",
+]
+
+[[package]]
 name = "syn"
 version = "1.0.109"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2453,27 +2474,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 dependencies = [
  "core_maths",
-]
-
-[[package]]
-name = "ultrafine-ctl"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "directories",
- "env_logger",
- "fontdue",
- "global-hotkey",
- "hidapi",
- "log",
- "serde",
- "softbuffer",
- "tao",
- "tiny-skia",
- "toml 1.2.1+spec-1.1.0",
- "tray-icon",
- "windows",
- "wmi",
 ]
 
 [[package]]

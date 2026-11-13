@@ -1,4 +1,4 @@
-//! ultrafine-ctl: tray app with brightness hotkeys and automatic brightness
+//! Sunfine: tray app with brightness hotkeys and automatic brightness
 //! for the LG UltraFine 5K on Windows. See CLAUDE.md and docs/PROTOCOL.md.
 //! (Also builds on macOS for development; not released there.)
 
@@ -192,7 +192,12 @@ fn set_spec(cfg: &mut Config, a: Action, spec: String) {
 }
 
 fn main() {
+    // Before logging: the log file lives in the (new) config directory.
+    let migrated = Config::migrate_legacy();
     init_logging();
+    if let Some(old) = migrated {
+        log::info!("copied settings from {} (old name ultrafine-ctl)", old.display());
+    }
     if let Err(e) = run() {
         log::error!("{e:#}");
         std::process::exit(1);
@@ -462,7 +467,7 @@ fn run() -> Result<()> {
         mtime: Config::mtime(),
     };
     log::info!(
-        "ultrafine-ctl {} – config: {}",
+        "Sunfine {} – config: {}",
         env!("CARGO_PKG_VERSION"),
         Config::path()
             .map(|p| p.display().to_string())
@@ -593,7 +598,7 @@ fn run() -> Result<()> {
                 match TrayIconBuilder::new()
                     .with_menu(Box::new(menu.take().expect("menu")))
                     .with_menu_on_left_click(true)
-                    .with_tooltip("LG UltraFine")
+                    .with_tooltip("Sunfine – LG UltraFine")
                     .with_icon(icon())
                     .build()
                 {
@@ -908,14 +913,14 @@ fn laptop_poller(tx: mpsc::Sender<Cmd>) {
     }
 }
 
-/// Logs to stderr and to `ultrafine-ctl.log` next to the config (the
+/// Logs to stderr and to `sunfine.log` next to the config (the
 /// Windows release has no console). The file is restarted when over 1 MB.
 fn init_logging() {
     use std::io::Write;
     let mut builder =
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
     let file = Config::path().and_then(|p| {
-        let path = p.with_file_name("ultrafine-ctl.log");
+        let path = p.with_file_name("sunfine.log");
         std::fs::create_dir_all(path.parent()?).ok()?;
         let big = std::fs::metadata(&path).is_ok_and(|m| m.len() > 1_000_000);
         std::fs::OpenOptions::new()

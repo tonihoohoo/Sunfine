@@ -18,8 +18,8 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: ultrafine-ctl.exe
-            asset: ultrafine-ctl-windows-x64.exe
+            bin: sunfine.exe
+            asset: sunfine-windows-x64.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
