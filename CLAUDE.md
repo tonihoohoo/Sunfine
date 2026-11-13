@@ -43,6 +43,11 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
   in (needs several replugs). Root cause is below the app (firmware /
   Thunderbolt / power management). **No automation that needs admin rights**
   (user decision) – the app only re-opens the HID device when it reappears.
+- Windows: display often stays **black** after plug-in although Windows sees
+  it as active; Win+Ctrl+Shift+B fixes it. Idea: tray item / hotkey "Reset
+  display" (optionally auto-run when the LG HID device appears), no admin –
+  e.g. `SetDisplayConfig` re-apply or synthesized Win+Ctrl+Shift+B.
+  Not yet verified that either works like the real key combo.
 
 ## Tools
 
@@ -51,3 +56,6 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 `tools/win_diag.cmd` (+ `win_diag.ps1`) is the Windows run: read-only
 diagnostics (USB problem devices, LG devices, power settings, event logs,
 WinRT LightSensor, hidapi test), writes `win_diag_<timestamp>.log`.
+`tools/win_display_reset.cmd` tests programmatic fixes for the black-screen
+case (CDS_RESET mode set, SetDisplayConfig re-apply, injected
+Win+Ctrl+Shift+B), logs to `win_display_reset.log`.
