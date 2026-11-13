@@ -170,8 +170,17 @@ Every no-admin path to the display's own sensor is closed: HID iface 2 is
 held by a failing Microsoft sensor driver (code 10), WinRT does not list it,
 the I2C bridge shows no light-dependent device with plain reads, DDC/CI has
 no lux value. Remaining: laptop's own ALS (WinRT), or a one-time manual
-driver swap for the MI_02 collection to a plain HID driver (needs admin –
-not pursued per user decision).
+driver swap for the MI_02 collection to a plain HID driver (needs admin).
+
+**Solved by the manual driver swap (2026-11-13, user has admin):** Device
+Manager -> Sensors -> "HID Ambient Light Sensor" -> Update driver -> Browse ->
+Let me pick -> "HID-compliant device". Afterwards hidapi lists iface 2 as
+usage page 0x20 / usage 0x41, product string **"HID ALS"**, and `uf_probe.py
+als` streams exactly the same 6-byte reports as on macOS (dim room 18-19 lux,
+covered 0, flashlight up to ~64000; flags 0x40 rising / 0x80 falling).
+Caveats: the setting is per device instance (another port may need it
+again); Windows Update could restore the sensor driver. Revert: pick "HID
+Ambient Light Sensor" again or uninstall + scan for hardware changes.
 
 ## Raw HID report descriptors (from ioreg)
 

@@ -34,14 +34,12 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 
 ## Open questions / risks
 
-- Windows ALS: **confirmed** the sensor class driver owns iface 2 and the
-  device is in Error state – hidapi cannot see it and WinRT `LightSensor`
-  does not list it (only the laptop's own sensor). Cause: Microsoft's HID
-  sensor driver fails to start on LG's descriptor (code 10). iface 0 is an
-  NXP LPCUSBSIO I2C bridge (readable via hidapi, no admin), but no usable ALS
-  found on it (0x4A reads zeros; a pointer write to 0x4B hung the bridge).
-  **Never write to that bus.** Proposed: laptop's own ALS via WinRT on
-  Windows; display ALS on macOS.
+- Windows ALS: Microsoft's HID sensor driver fails (code 10) on iface 2 and
+  hides it. **Working setup:** one-time manual driver swap of that device to
+  "HID-compliant device" (admin, done by the user) -> hidapi reads iface 2
+  exactly like macOS. The app must detect the "not visible" case and tell the
+  user how to do the swap (README); fallback: laptop's own ALS via WinRT.
+  The iface 0 I2C bridge has no usable ALS – **never write to that bus.**
 - Windows: DDC/CI brightness (VCP 0x10, 0-100) also works through the
   standard monitor API (dxva2) – alternative to HID brightness, coarser.
 - Exact usable minimum brightness level (100 accepted; visual check needed).
