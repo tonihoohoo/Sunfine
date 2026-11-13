@@ -279,7 +279,15 @@ pub fn run_with<C: Connector>(
             connected: display.is_some(),
             light_sensor: display.as_ref().is_some_and(|d| d.has_light_sensor()),
             level: ctl.level(),
-            lux: ctl.lux(),
+            // Whole lux (0.1 below 10): the smoothed value changes every tick,
+            // which would otherwise flood the UI with status updates.
+            lux: ctl.lux().map(|l| {
+                if l < 10.0 {
+                    (l * 10.0).round() / 10.0
+                } else {
+                    l.round()
+                }
+            }),
             auto: ctl.auto(),
             mode: ctl.mode(),
             source: ctl.effective_source(),

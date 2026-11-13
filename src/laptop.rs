@@ -109,7 +109,16 @@ mod imp {
                 .as_ref()
                 .and_then(|s| s.GetCurrentReading().ok())
                 .and_then(|r| r.IlluminanceInLux().ok())
-                .map(|l| (l as f64 * 10.0).round() / 10.0)
+                .map(|l| l as f64)
+                // Coarse enough that sensor jitter doesn't send a new state
+                // twice a second: 0.1 lx in the dark, 1 lx above 10 lx.
+                .map(|l| {
+                    if l < 10.0 {
+                        (l * 10.0).round() / 10.0
+                    } else {
+                        l.round()
+                    }
+                })
                 .filter(|l| l.is_finite() && *l >= 0.0);
             match fresh {
                 Some(l) => {
