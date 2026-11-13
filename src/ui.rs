@@ -143,7 +143,8 @@ fn present(surface: &mut Surface, pm: &Pixmap) -> Result<()> {
     };
     surface.resize(nw, nh).map_err(|e| anyhow!("resize: {e}"))?;
     let mut buf = surface.buffer_mut().map_err(|e| anyhow!("buffer: {e}"))?;
-    for (dst, px) in buf.iter_mut().zip(pm.data().chunks_exact(4)) {
+    let (pixels, _) = pm.data().as_chunks::<4>();
+    for (dst, px) in buf.iter_mut().zip(pixels) {
         *dst = (px[0] as u32) << 16 | (px[1] as u32) << 8 | px[2] as u32;
     }
     buf.present().map_err(|e| anyhow!("present: {e}"))

@@ -23,8 +23,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the MSRV / local toolchain so new lints don't break -D warnings.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.90"
           targets: ${{ matrix.target }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
