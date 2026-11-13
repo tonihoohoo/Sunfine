@@ -77,6 +77,14 @@ quit event – a new copy replaces the old; two copies fighting over the
 display looked like "brightness does not change"); popup lays out from its
 actual size and redraws on resize/DPI change; manual changes read the level
 back and log mismatches.
+v0.7: manual changes in auto mode scale the whole active curve by default
+like Windows (`adjust = whole_curve | nearest_point`, `curve_scale`,
+`follow_scale`; applied % = curve % x scale, max 100; the editor shows the
+scaled curve and an edit bakes it in with scale 1); follow laptop without
+our smoothing (1 % threshold, 300 ms fade, poll 150 ms); brightness writes
+throttled to one per 150 ms, latest wins (`Writer` in worker.rs) – a burst
+of writes while dragging curve points once left the display unresponsive
+until power cycled.
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 
@@ -97,14 +105,15 @@ the LG too.
 - Curve of user points (lux, %), linear between points on a log10(lux+1)
   axis, flat outside. Default (1,2) (20,30) (300,65) (5000,100).
 - Smoothing is time-based (tau `smoothing_seconds`, 2 s, on the log-lux
-  axis; laptop panel 1 s) and completes while sensors are quiet (the LG
+  axis; laptop panel not smoothed) and completes while sensors are quiet (the LG
   sensor only reports changes). Thresholds are relative to the current
   level: 12 % while moving, 8 % once settled (LG sensor noise is ±2 lx);
-  sync 6 % / 2.5 %. Device fade field 800 ms.
-- Manual change (hotkey/slider) in auto mode: no pause; the nearest curve
-  point within ~2x lux moves to (current lux, chosen %), else a point is
+  follow 1 % (300 ms fade). Device fade field 800 ms.
+- Manual change (hotkey/preset) in auto mode: no pause; by default the
+  whole active curve is scaled so it gives the chosen % at the current
+  input (Windows-like). `adjust = nearest_point`: the nearest curve point
+  within ~2x lux moves to (current lux, chosen %), else a point is
   inserted; neighbours are clamped so the curve stays non-decreasing.
-  While syncing with the laptop the change sets the sync offset instead.
 - Sensor is event-driven: block on `read_timeout`, keep last lux.
 
 ## Open questions / risks

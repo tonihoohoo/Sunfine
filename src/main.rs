@@ -563,8 +563,11 @@ fn run() -> Result<()> {
                 return;
             }
             let points = match kind {
-                CurveKind::Light => cfg.curve.clone(),
-                CurveKind::Follow => curve::follow_to_points(&cfg.follow()),
+                // As applied (whole-curve scale included).
+                CurveKind::Light => curve::scaled(&cfg.curve, cfg.curve_scale),
+                CurveKind::Follow => {
+                    curve::scaled(&curve::follow_to_points(&cfg.follow()), cfg.follow_scale)
+                }
             };
             match CurveEditor::new(target, painter.clone(), kind, points) {
                 Ok(mut e) => {
@@ -693,11 +696,17 @@ fn run() -> Result<()> {
                         tooltip = text;
                     }
                 }
-                // The worker learns curve points: persist.
+                // Manual changes move the curves (points or scale): persist.
                 let follow = Some(curve::points_to_follow(&s.follow_curve));
-                if s.curve != cfg.curve || follow != cfg.follow_curve {
+                if s.curve != cfg.curve
+                    || follow != cfg.follow_curve
+                    || s.curve_scale != cfg.curve_scale
+                    || s.follow_scale != cfg.follow_scale
+                {
                     cfg.curve = s.curve.clone();
                     cfg.follow_curve = follow;
+                    cfg.curve_scale = s.curve_scale;
+                    cfg.follow_scale = s.follow_scale;
                     mark_dirty(&mut save_at);
                 }
                 if s.manual_seq != last_seq {
@@ -726,12 +735,16 @@ fn run() -> Result<()> {
                     match e.handle(&event) {
                         Some(EditorAction::Changed(pts)) => {
                             match e.kind() {
+                                // The edited curve includes the scale; it
+                                // becomes the new base with scale 1.
                                 CurveKind::Light => {
                                     cfg.curve = pts.clone();
+                                    cfg.curve_scale = 1.0;
                                     send(Cmd::SetCurve(pts));
                                 }
                                 CurveKind::Follow => {
                                     cfg.follow_curve = Some(curve::points_to_follow(&pts));
+                                    cfg.follow_scale = 1.0;
                                     send(Cmd::SetFollowCurve(pts));
                                 }
                             }
@@ -865,12 +878,13 @@ fn curve_kind(cfg: &Config) -> CurveKind {
 
 fn update_editor(e: &mut CurveEditor, s: &Status) {
     match e.kind() {
-        CurveKind::Light => e.update(s.lux, &s.curve),
-        CurveKind::Follow => e.update(s.panel, &s.follow_curve),
+        CurveKind::Light => e.update(s.lux, &curve::scaled(&s.curve, s.curve_scale)),
+        CurveKind::Follow => e.update(s.panel, &curve::scaled(&s.follow_curve, s.follow_scale)),
     }
 }
 
-/// Polls the laptop panel twice a second and forwards changes.
+/// Polls the laptop panel ~7 times a second and forwards changes (follow
+/// mode should react about as fast as the laptop screen itself).
 fn laptop_poller(tx: mpsc::Sender<Cmd>) {
     let mut reader = match laptop::Reader::new() {
         Ok(r) => r,
@@ -889,7 +903,7 @@ fn laptop_poller(tx: mpsc::Sender<Cmd>) {
             }
             last = now;
         }
-        std::thread::sleep(Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(150));
     }
 }
 
@@ -1026,6 +1040,8 @@ mod tests {
             laptop,
             curve: config::default_curve(),
             follow_curve: curve::default_follow_points(),
+            curve_scale: 1.0,
+            follow_scale: 1.0,
             manual_seq: 0,
         }
     }

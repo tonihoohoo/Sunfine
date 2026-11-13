@@ -3,7 +3,7 @@
 Brightness hotkeys and automatic brightness (via the built-in ambient light
 sensor) for the LG UltraFine 5K display on Windows.
 
-Status: protocol verified (see `docs/PROTOCOL.md`). App v0.6.
+Status: protocol verified (see `docs/PROTOCOL.md`). App v0.7.
 
 ## Use
 
@@ -23,11 +23,18 @@ reason in brackets.
     brightness (whatever changes it: the laptop's auto brightness, Fn+F5/F6,
     the Windows slider) along the follow curve. With the lid closed the
     light sensor is used instead
-  - In both automatic modes, adjusting brightness yourself teaches the
-    active curve for the current light level / laptop brightness
+  - In both automatic modes, adjusting brightness yourself (shortcut or
+    preset) raises or lowers the whole active curve, like the Windows
+    slider does with its automatic brightness: one change applies to every
+    light level. To shape the curve point by point use the editor, or set
+    `adjust = "nearest_point"` in the settings file (only the curve point
+    nearest to the current light level moves)
+  - Follow laptop reacts at once (the laptop screen is checked about 7
+    times a second); the laptop's own changes are already smooth
 - **Brightness curve…** – edits the curve of the selected automatic mode:
   drag points, double-click to add, right-click to remove; the current
-  input is shown live
+  input is shown live. The curve is shown as applied (including your
+  shortcut adjustments); editing it makes that the new base
 - **Shortcuts ▸** – click one and press the new combination (Fn
   combinations cannot be used; the laptop handles them in its firmware)
 - **Popup on brightness keys**, **Fix black screen on connect**,
