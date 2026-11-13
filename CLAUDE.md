@@ -28,8 +28,12 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 - Windows: when the laptop's own adaptive brightness is on, keep the LG in
   sync with the laptop panel (both should look alike). Inputs: laptop panel
   brightness (`root\wmi WmiMonitorBrightness`, events), Windows
-  ADAPTBRIGHT power setting, LG's own lux. Exact mapping to decide from
-  `tools/win_check.cmd` watch data. Windows' own brightness slider does not
+  ADAPTBRIGHT power setting, LG's own lux. Data (win_check_1.log): Windows
+  adaptive brightness moves the panel *relative* to the user's slider (66 %
+  -> 51 % in the dark, slow return). Proposed: LG level = calibrated map of
+  panel % (user matches the two once with hotkeys; store the offset), driven
+  by `WmiMonitorBrightnessEvent`; fall back to LG's own lux when the lid is
+  closed / no panel or laptop adaptive is off. Windows' own brightness slider does not
   show the LG (checked 2026-11-13); Windows adaptive brightness only drives
   the internal panel.
 
