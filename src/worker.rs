@@ -104,8 +104,6 @@ pub struct Timing {
     pub reconnect_every: Duration,
     /// Deadline for one call to the display (see `guard.rs`).
     pub io_timeout: Duration,
-    /// Extra wait after a fade before a mismatched read-back is re-checked.
-    pub recheck_after: Duration,
 }
 
 const TIMING: Timing = Timing {
@@ -113,7 +111,6 @@ const TIMING: Timing = Timing {
     reconnect_every: Duration::from_secs(2),
     // Feature reports normally take a few ms.
     io_timeout: Duration::from_secs(2),
-    recheck_after: Duration::from_millis(300),
 };
 const PRESET_FADE_MS: u16 = 250;
 const HOTKEY_FADE_MS: u16 = 250;
@@ -123,85 +120,68 @@ const FOLLOW_FADE_MS: u16 = 300;
 /// a waiting one. A stream of writes (e.g. dragging a curve point, a held
 /// hotkey) once left the display unresponsive until it was power cycled.
 const MIN_WRITE_GAP: Duration = Duration::from_millis(150);
+/// Wait this long after a fade should have ended before the next write.
+const FADE_MARGIN: Duration = Duration::from_millis(50);
 
 /// Throttled brightness writes: the latest request wins.
 ///
-/// Manual changes are read back. If the display reports another level, it
-/// is checked again once the fade is over; if it still disagrees the level
-/// is sent once more without a fade, and if the display ignores that too the
-/// handles are dropped and reopened (which also re-reads the real level).
-/// At most two extra calls per manual change, so this never floods.
+/// A new write never starts while the previous fade is still running. The
+/// firmware can get stuck when a faded write arrives during a fade: it keeps
+/// acknowledging writes but stays at one level (sunfine.log 2026-11-13: in
+/// follow-laptop mode, 300 ms fades every 150 ms, the display reported 10848
+/// for every write) until it gets a write without a fade.
+///
+/// Every write is read back. On a mismatch the level is sent again at once
+/// without a fade (which unsticks the firmware); if the display ignores that
+/// too, the handles are dropped and reopened (which re-reads the real level).
+/// At most one extra write per write, so this never floods.
 #[derive(Default)]
 struct Writer {
     last: Option<Instant>,
-    /// (level, fade ms, read back afterwards)
+    /// When the fade started by the last write is over.
+    fade_end: Option<Instant>,
+    /// (level, fade ms, manual: log the read-back at info level)
     pending: Option<(u32, u16, bool)>,
-    /// (when, level): re-check a read-back that did not match yet.
-    recheck: Option<(Instant, u32)>,
-    recheck_after: Duration,
 }
 
 impl Writer {
     /// Queues `level`; the controller treats it as the display's level.
-    fn request(&mut self, ctl: &mut Controller, level: u32, fade: u16, verify: bool) {
-        let verify = verify || self.pending.is_some_and(|p| p.2);
-        self.pending = Some((level, fade, verify));
+    fn request(&mut self, ctl: &mut Controller, level: u32, fade: u16, manual: bool) {
+        let manual = manual || self.pending.is_some_and(|p| p.2);
+        self.pending = Some((level, fade, manual));
         ctl.set_known_level(level);
     }
 
     /// Forgets device state (disconnect / reconnect).
     fn reset(&mut self) {
         self.pending = None;
-        self.recheck = None;
+        self.fade_end = None;
     }
 
-    /// Sends the waiting request if the gap has passed, and runs a due
-    /// read-back re-check.
+    /// Sends the waiting request once the gap has passed and the previous
+    /// fade is over.
     fn flush<D: Device>(&mut self, d: &D, failed: &mut bool) {
-        if self.pending.is_none() {
-            self.run_recheck(d, failed);
-            return;
-        }
-        let Some((level, fade, check)) = self.pending else {
+        let Some((level, fade, manual)) = self.pending else {
             return;
         };
-        if self.last.is_some_and(|t| t.elapsed() < MIN_WRITE_GAP) {
+        let now = Instant::now();
+        if self
+            .last
+            .is_some_and(|t| now.duration_since(t) < MIN_WRITE_GAP)
+            || self.fade_end.is_some_and(|t| now < t)
+        {
             return;
         }
         self.pending = None;
-        // A newer level makes an older re-check moot.
-        self.recheck = None;
-        self.last = Some(Instant::now());
-        match d.set_brightness(level, fade) {
-            Ok(()) => {
-                log::debug!("level -> {level} ({fade} ms)");
-                if check {
-                    match verify(d, level) {
-                        Check::Ok => {}
-                        Check::Mismatch => {
-                            let wait = Duration::from_millis(fade as u64) + self.recheck_after;
-                            self.recheck = Some((Instant::now() + wait, level));
-                        }
-                        Check::Failed => *failed = true,
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("set brightness failed: {e:#}");
-                *failed = true;
-            }
-        }
-    }
-
-    fn run_recheck<D: Device>(&mut self, d: &D, failed: &mut bool) {
-        let Some((at, level)) = self.recheck else {
-            return;
-        };
-        if Instant::now() < at {
+        self.last = Some(now);
+        if let Err(e) = d.set_brightness(level, fade) {
+            log::warn!("set brightness failed: {e:#}");
+            *failed = true;
             return;
         }
-        self.recheck = None;
-        match verify(d, level) {
+        log::debug!("level -> {level} ({fade} ms)");
+        self.fade_end = Some(now + Duration::from_millis(fade as u64) + FADE_MARGIN);
+        match verify(d, level, manual) {
             Check::Ok => return,
             Check::Failed => {
                 *failed = true;
@@ -209,14 +189,14 @@ impl Writer {
             }
             Check::Mismatch => {}
         }
-        log::warn!("display still not at {level} after the fade; sending it again without a fade");
-        self.last = Some(Instant::now());
+        log::warn!("display did not take {level}; sending it again without a fade");
+        self.fade_end = None;
         if let Err(e) = d.set_brightness(level, 0) {
             log::warn!("set brightness failed: {e:#}");
             *failed = true;
             return;
         }
-        match verify(d, level) {
+        match verify(d, level, true) {
             Check::Ok => {}
             Check::Mismatch | Check::Failed => {
                 log::warn!("display ignores brightness writes; reopening it");
@@ -277,10 +257,7 @@ pub fn run_with<C: Connector>(
     let mut last_status: Option<Status> = None;
     let mut last_mode = ctl.mode();
     let mut manual_seq = 0u64;
-    let mut writer = Writer {
-        recheck_after: timing.recheck_after,
-        ..Writer::default()
-    };
+    let mut writer = Writer::default();
 
     loop {
         let mut failed = false;
@@ -488,12 +465,16 @@ enum Check {
     Failed,
 }
 
-/// Reads the level back after a manual change and logs it, so the log
-/// shows whether the display took the write.
-fn verify<D: Device>(d: &D, wrote: u32) -> Check {
+/// Reads the level back after a write, so a display that ignores writes
+/// is noticed (and the log shows it). `manual`: log success at info level.
+fn verify<D: Device>(d: &D, wrote: u32, manual: bool) -> Check {
     match d.brightness() {
         Ok(read) if read.abs_diff(wrote) <= wrote / 100 + 1 => {
-            log::info!("display reports {read} (ok)");
+            if manual {
+                log::info!("display reports {read} (ok)");
+            } else {
+                log::debug!("display reports {read} (ok)");
+            }
             Check::Ok
         }
         Ok(read) => {
@@ -535,6 +516,12 @@ mod tests {
         /// Writes "succeed" but the level stays (firmware ignores them).
         ignore_writes: bool,
         opens: usize,
+        /// Firmware model from sunfine.log: a faded write during a running
+        /// fade sticks the level until a write without a fade arrives.
+        overlap_sticks: bool,
+        stuck: bool,
+        got_stuck: bool,
+        fade_until: Option<Instant>,
     }
 
     impl SimDev {
@@ -563,9 +550,18 @@ mod tests {
             if s.fail_writes || !s.present {
                 anyhow::bail!("unplugged");
             }
-            if !s.ignore_writes {
+            let now = Instant::now();
+            if s.overlap_sticks && transition_ms > 0 && s.fade_until.is_some_and(|t| now < t) {
+                s.stuck = true;
+                s.got_stuck = true;
+            }
+            if transition_ms == 0 {
+                s.stuck = false;
+            }
+            if !s.ignore_writes && !s.stuck {
                 s.level = level;
             }
+            s.fade_until = Some(now + Duration::from_millis(transition_ms as u64));
             s.writes.push((level, transition_ms));
             Ok(())
         }
@@ -628,7 +624,6 @@ mod tests {
                         // Generous: a slow CI runner must never look like a
                         // display that stopped answering.
                         io_timeout: Duration::from_secs(1),
-                        recheck_after: Duration::from_millis(20),
                     },
                 )
             });
@@ -1012,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn display_that_ignores_writes_is_resent_once_then_reopened() {
+    fn display_that_ignores_writes_is_resent_once_without_fade_then_reopened() {
         let mut h = Harness::start(
             Config {
                 auto: false,
@@ -1052,5 +1047,65 @@ mod tests {
         let sim = h.sim();
         assert_eq!(sim.writes.len(), 1);
         assert_eq!(sim.opens, 1);
+    }
+    #[test]
+    fn follow_laptop_never_overlaps_fades() {
+        let mut h = Harness::start(
+            follow_cfg(),
+            Sim {
+                initial_lux: Some(18),
+                overlap_sticks: true,
+                ..present(20000)
+            },
+        );
+        h.wait("connected", |s| s.connected);
+        // The laptop panel moving fast, as the poller reports it.
+        for i in 0..60 {
+            h.send(lap(20 + (i * 7 % 70) as u8, true, None));
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        h.send(lap(80, true, None));
+        let s = h.wait("following 80", |s| {
+            s.mode == Mode::LaptopSync && s.panel == Some(80.0)
+        });
+        let want = percent_to_level(
+            crate::curve::eval(&s.follow_curve, crate::curve::Axis::Percent, 80.0) * s.follow_scale,
+        );
+        let end = Instant::now() + Duration::from_secs(8);
+        while h.sim().level != want && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let sim = h.sim();
+        assert!(!sim.got_stuck, "a write started during a fade");
+        assert_eq!(sim.level, want);
+        assert!(
+            sim.writes.iter().all(|w| w.1 > 0),
+            "no resends needed: {:?}",
+            sim.writes
+        );
+    }
+
+    #[test]
+    fn stuck_firmware_is_unstuck_by_a_write_without_fade() {
+        let mut h = Harness::start(
+            Config {
+                auto: false,
+                ..sensor_cfg()
+            },
+            Sim {
+                stuck: true,
+                ..present(10848)
+            },
+        );
+        h.wait("connected", |s| s.connected);
+        h.send(Cmd::Step { up: true });
+        let s = h.wait("brighter", |s| s.manual_seq == 1);
+        h.settle();
+        let sim = h.sim();
+        let target = s.level.unwrap();
+        assert!(target > 10848);
+        assert_eq!(sim.level, target, "display took the level");
+        assert_eq!(sim.writes, vec![(target, HOTKEY_FADE_MS), (target, 0)]);
+        assert_eq!(sim.opens, 1, "no reopen needed");
     }
 }
