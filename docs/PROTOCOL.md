@@ -52,7 +52,11 @@ Responses: 0x00 OK, 0x02 NAK, 0x04 SLAVE_NAK, 0x11 INVALID_CMD, ...
 
 MAX44009 (if that is what 0x4A/0x4B are): reg 0x03 = lux high, 0x04 = lux
 low; lux = 2^(hi>>4) * ((hi&0x0F)<<4 | lo&0x0F) * 0.045. Do not read reg 0x00
-(clears interrupt status the display MCU may use). Probe:
+(clears interrupt status the display MCU may use).
+First lux attempt (`docs/logs/win_i2c_als_1.log`): XFER (ptr + read) on
+0x4A/0x4B returns OK but **all zeros**; OK responses carry only the n read
+bytes (length = 4 + n), unlike the NXP reference. Read path not yet
+validated -> `uf_probe.py i2c-diag`. Probe:
 `uf_probe.py i2c-lux [s]` / `i2c-regs <addr> <reg> <n>` (pointer write + read;
 no register is modified).
 
