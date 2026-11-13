@@ -44,6 +44,9 @@ pub struct Status {
     pub laptop: Option<Laptop>,
     pub follow_curve: Vec<CurvePoint>,
     pub curve: Vec<CurvePoint>,
+    /// Whole-curve scales from manual changes (see `Config::curve_scale`).
+    pub curve_scale: f64,
+    pub follow_scale: f64,
     /// Increments on every applied hotkey change (popup trigger).
     pub manual_seq: u64,
 }
@@ -103,6 +106,62 @@ const TIMING: Timing = Timing {
 };
 const PRESET_FADE_MS: u16 = 250;
 const HOTKEY_FADE_MS: u16 = 250;
+/// Follow laptop: short fade so the LG keeps up with the laptop panel.
+const FOLLOW_FADE_MS: u16 = 300;
+/// At most one brightness write per this interval; newer requests replace
+/// a waiting one. A stream of writes (e.g. dragging a curve point, a held
+/// hotkey) once left the display unresponsive until it was power cycled.
+const MIN_WRITE_GAP: Duration = Duration::from_millis(150);
+
+/// Throttled brightness writes: the latest request wins.
+#[derive(Default)]
+struct Writer {
+    last: Option<Instant>,
+    /// (level, fade ms, read back afterwards)
+    pending: Option<(u32, u16, bool)>,
+}
+
+impl Writer {
+    /// Queues `level`; the controller treats it as the display's level.
+    fn request(&mut self, ctl: &mut Controller, level: u32, fade: u16, verify: bool) {
+        let verify = verify || self.pending.is_some_and(|p| p.2);
+        self.pending = Some((level, fade, verify));
+        ctl.set_known_level(level);
+    }
+
+    /// Sends the waiting request if the gap has passed.
+    fn flush<D: Device>(&mut self, d: &D, failed: &mut bool) {
+        let Some((level, fade, check)) = self.pending else {
+            return;
+        };
+        if self.last.is_some_and(|t| t.elapsed() < MIN_WRITE_GAP) {
+            return;
+        }
+        self.pending = None;
+        self.last = Some(Instant::now());
+        match d.set_brightness(level, fade) {
+            Ok(()) => {
+                log::debug!("level -> {level} ({fade} ms)");
+                if check {
+                    verify(d, level);
+                }
+            }
+            Err(e) => {
+                log::warn!("set brightness failed: {e:#}");
+                *failed = true;
+            }
+        }
+    }
+}
+
+/// Fade for an automatic change in the current mode.
+fn auto_fade(ctl: &Controller, transition: u16) -> u16 {
+    if ctl.mode() == Mode::LaptopSync {
+        FOLLOW_FADE_MS.min(transition)
+    } else {
+        transition
+    }
+}
 
 /// Production entry point: real HID.
 pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
@@ -141,6 +200,7 @@ pub fn run_with<C: Connector>(
     let mut last_status: Option<Status> = None;
     let mut last_mode = ctl.mode();
     let mut manual_seq = 0u64;
+    let mut writer = Writer::default();
 
     loop {
         let mut failed = false;
@@ -178,20 +238,20 @@ pub fn run_with<C: Connector>(
                 }
                 Cmd::Laptop(l) => {
                     let t = ctl.on_laptop(l, Instant::now());
-                    if let (Some(d), Some(t)) = (&display, t) {
-                        apply(d, &mut ctl, t, transition, &mut failed);
+                    if let (Some(_), Some(t)) = (&display, t) {
+                        let fade = auto_fade(&ctl, transition);
+                        writer.request(&mut ctl, t, fade, false);
                     }
                 }
                 Cmd::Step { up } => match (&display, ctl.on_step(up)) {
-                    (Some(d), Some(t)) => {
+                    (Some(_), Some(t)) => {
                         log::info!(
                             "manual {}: {:?} -> {t} ({:?})",
                             if up { "up" } else { "down" },
                             ctl.level(),
                             ctl.mode()
                         );
-                        apply(d, &mut ctl, t, HOTKEY_FADE_MS, &mut failed);
-                        verify(d, t);
+                        writer.request(&mut ctl, t, HOTKEY_FADE_MS, true);
                         manual_seq += 1;
                     }
                     (d, _) => log::warn!(
@@ -205,23 +265,27 @@ pub fn run_with<C: Connector>(
                     ),
                 },
                 Cmd::SetLevel(level) => {
-                    if let Some(d) = &display {
+                    if display.is_some() {
                         log::info!("preset: {:?} -> {level} ({:?})", ctl.level(), ctl.mode());
                         ctl.on_manual(level);
-                        apply(d, &mut ctl, level, PRESET_FADE_MS, &mut failed);
-                        verify(d, level);
+                        writer.request(&mut ctl, level, PRESET_FADE_MS, true);
                     } else {
                         log::warn!("preset ignored: display not connected");
                     }
                 }
             }
             if retarget {
-                if let (Some(d), Some(t)) = (&display, ctl.auto_target()) {
-                    apply(d, &mut ctl, t, transition, &mut failed);
+                if let (Some(_), Some(t)) = (&display, ctl.auto_target()) {
+                    let fade = auto_fade(&ctl, transition);
+                    writer.request(&mut ctl, t, fade, false);
                 }
                 // The command already handled the new mode.
                 last_mode = ctl.mode();
             }
+        }
+
+        if let Some(d) = &display {
+            writer.flush(d, &mut failed);
         }
 
         // 2. (Re)connect.
@@ -238,6 +302,7 @@ pub fn run_with<C: Connector>(
                             d.has_light_sensor()
                         );
                         ctl.set_known_level(level);
+                        writer.pending = None;
                         // The sensor only reports changes; ask for the current value.
                         match d.initial_lux() {
                             Some(lux) => {
@@ -262,13 +327,15 @@ pub fn run_with<C: Connector>(
             match d.read_lux(timing.read_timeout_ms) {
                 Ok(Some(lux)) => {
                     if let Some(t) = ctl.on_lux(lux, Instant::now()) {
-                        apply(d, &mut ctl, t, transition, &mut failed);
+                        let fade = auto_fade(&ctl, transition);
+                        writer.request(&mut ctl, t, fade, false);
                     }
                 }
                 Ok(None) => {
                     // Quiet sensor: keep smoothing towards the last reading.
                     if let Some(t) = ctl.tick(Instant::now()) {
-                        apply(d, &mut ctl, t, transition, &mut failed);
+                        let fade = auto_fade(&ctl, transition);
+                        writer.request(&mut ctl, t, fade, false);
                     }
                 }
                 Err(e) => {
@@ -280,9 +347,13 @@ pub fn run_with<C: Connector>(
             if mode != last_mode && !failed {
                 log::info!("mode {last_mode:?} -> {mode:?}");
                 if let Some(t) = ctl.auto_target() {
-                    apply(d, &mut ctl, t, transition, &mut failed);
+                    let fade = auto_fade(&ctl, transition);
+                    writer.request(&mut ctl, t, fade, false);
                 }
                 last_mode = mode;
+            }
+            if !failed {
+                writer.flush(d, &mut failed);
             }
         } else {
             std::thread::sleep(Duration::from_millis(timing.read_timeout_ms.max(1) as u64));
@@ -290,6 +361,7 @@ pub fn run_with<C: Connector>(
         if failed && display.is_some() {
             log::info!("display disconnected");
             display = None;
+            writer.pending = None;
             ctl.reset_device();
         }
 
@@ -313,6 +385,8 @@ pub fn run_with<C: Connector>(
             laptop: ctl.laptop(),
             curve: ctl.curve().to_vec(),
             follow_curve: ctl.follow_curve().to_vec(),
+            curve_scale: ctl.curve_scale(),
+            follow_scale: ctl.follow_scale(),
             manual_seq,
         };
         if last_status.as_ref() != Some(&status) {
@@ -331,25 +405,6 @@ fn verify<D: Device>(d: &D, wrote: u32) {
         }
         Ok(read) => log::warn!("wrote {wrote} but the display reports {read}"),
         Err(e) => log::warn!("read-back failed: {e:#}"),
-    }
-}
-
-fn apply<D: Device>(
-    d: &D,
-    ctl: &mut Controller,
-    level: u32,
-    transition_ms: u16,
-    failed: &mut bool,
-) {
-    match d.set_brightness(level, transition_ms) {
-        Ok(()) => {
-            log::debug!("level -> {level} ({transition_ms} ms)");
-            ctl.set_known_level(level);
-        }
-        Err(e) => {
-            log::warn!("set brightness failed: {e:#}");
-            *failed = true;
-        }
     }
 }
 
@@ -590,13 +645,73 @@ mod tests {
         h.send(Cmd::Step { up: false });
         let s = h.wait("darker", |s| s.level.is_some_and(|l| l < lvl));
         assert_eq!(s.manual_seq, before.manual_seq + 1);
-        assert_ne!(s.curve, before.curve, "curve learned");
-        assert!((curve_percent(&s.curve, 18.0) - level_to_percent(s.level.unwrap())).abs() < 0.01);
+        assert!(
+            s.curve_scale < 1.0,
+            "whole curve lowered: {}",
+            s.curve_scale
+        );
+        let applied = crate::curve::scaled(&s.curve, s.curve_scale);
+        assert!((curve_percent(&applied, 18.0) - level_to_percent(s.level.unwrap())).abs() < 0.01);
+        // The display really got the level (throttled write went out).
+        let want = s.level.unwrap();
+        let end = Instant::now() + Duration::from_secs(8);
+        while h.sim().level != want && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(h.sim().level, want);
         // Same light again: no change back (no pause needed).
         h.sim().lux.push_back(18);
         let after = h.settle();
         assert_eq!(after.level, s.level);
         assert_eq!(after.mode, Mode::LightSensor);
+    }
+
+    #[test]
+    fn write_floods_are_throttled_and_the_last_value_wins() {
+        let mut h = Harness::start(
+            sensor_cfg(),
+            Sim {
+                initial_lux: Some(18),
+                ..present(14307)
+            },
+        );
+        h.wait("connected", |s| s.connected && s.lux.is_some());
+        h.settle();
+        h.sim().writes.clear();
+        // Like dragging a curve point: many curve changes in a burst.
+        let t0 = Instant::now();
+        for i in 0..200 {
+            let p = 10.0 + (i % 80) as f64;
+            h.send(Cmd::SetCurve(vec![
+                CurvePoint {
+                    lux: 0.0,
+                    percent: p,
+                },
+                CurvePoint {
+                    lux: 10000.0,
+                    percent: p,
+                },
+            ]));
+        }
+        h.send(Cmd::SetCurve(vec![
+            CurvePoint {
+                lux: 0.0,
+                percent: 50.0,
+            },
+            CurvePoint {
+                lux: 10000.0,
+                percent: 50.0,
+            },
+        ]));
+        let want = percent_to_level(50.0);
+        let end = Instant::now() + Duration::from_secs(8);
+        while h.sim().level != want && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(h.sim().level, want, "last value applied");
+        let n = h.sim().writes.len();
+        let max = (t0.elapsed().as_millis() / MIN_WRITE_GAP.as_millis()) as usize + 2;
+        assert!(n <= max, "{n} writes in {:?}", t0.elapsed());
     }
 
     #[test]

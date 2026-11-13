@@ -37,6 +37,14 @@ pub struct Config {
     /// Follow-laptop curve: LG brightness (%) for each laptop screen
     /// brightness (%). Edited and learned the same way.
     pub follow_curve: Option<Vec<FollowPoint>>,
+    /// What a manual change in automatic mode does to the active curve.
+    pub adjust: Adjust,
+    /// Overall level of the light-sensor curve set by manual changes
+    /// (`adjust = "whole_curve"`): LG % = curve % x scale, max 100 %.
+    /// Like the Windows brightness slider on top of its light curve.
+    pub curve_scale: f64,
+    /// The same for the follow-laptop curve.
+    pub follow_scale: f64,
     /// v0.4-0.5 single calibration pair; read once to seed `follow_curve`.
     #[serde(skip_serializing)]
     pub sync_cal: Option<SyncCal>,
@@ -52,6 +60,17 @@ pub enum AutoMode {
     /// laptop's adaptive brightness, Fn keys, Windows slider).
     #[default]
     FollowLaptop,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Adjust {
+    /// Raise / lower the whole curve (like Windows: one change applies to
+    /// every light level).
+    #[default]
+    WholeCurve,
+    /// Move only the curve point nearest to the current input.
+    NearestPoint,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -139,6 +158,9 @@ impl Default for Config {
             // None = "not in the file": `sanitized()` fills it (and migrates
             // an old `sync_cal`). Use `follow()` to read it.
             follow_curve: None,
+            adjust: Adjust::WholeCurve,
+            curve_scale: 1.0,
+            follow_scale: 1.0,
             sync_cal: None,
             hotkeys: Hotkeys::default(),
         }
@@ -230,6 +252,9 @@ impl Config {
         if self.step_factor.is_nan() || self.step_factor <= 1.0 {
             self.step_factor = 1.2;
         }
+        for s in [&mut self.curve_scale, &mut self.follow_scale] {
+            *s = crate::curve::sanitize_scale(*s);
+        }
         self.curve = crate::curve::sanitize_curve(std::mem::take(&mut self.curve));
         let follow = match (self.follow_curve.take(), self.sync_cal.take()) {
             (Some(f), _) => f,
@@ -314,5 +339,13 @@ mod tests {
         .sanitized();
         assert!(cfg.smoothing_seconds.is_finite());
         assert_eq!(cfg.apply_threshold_percent, 0.0);
+        let cfg = Config {
+            curve_scale: f64::NAN,
+            follow_scale: 1e9,
+            ..Config::default()
+        }
+        .sanitized();
+        assert_eq!(cfg.curve_scale, 1.0);
+        assert_eq!(cfg.follow_scale, crate::curve::SCALE_MAX);
     }
 }

@@ -6,7 +6,9 @@
 
 use std::time::{Duration, Instant};
 
-use crate::config::{default_curve, default_follow, AutoMode, Config, CurvePoint, FollowPoint};
+use crate::config::{
+    default_curve, default_follow, Adjust, AutoMode, Config, CurvePoint, FollowPoint,
+};
 use crate::device::MAX_LEVEL;
 use crate::laptop::Laptop;
 
@@ -217,6 +219,38 @@ pub fn learn(pts: &mut Vec<CurvePoint>, lux: f64, percent: f64) {
     learn_on(pts, Axis::LogLux, lux, percent)
 }
 
+/// Range of the whole-curve scale (manual changes in automatic mode).
+pub const SCALE_MIN: f64 = 0.1;
+pub const SCALE_MAX: f64 = 10.0;
+
+pub fn sanitize_scale(s: f64) -> f64 {
+    if s.is_finite() {
+        s.clamp(SCALE_MIN, SCALE_MAX)
+    } else {
+        1.0
+    }
+}
+
+/// The curve as it is applied: every point x `scale`, max 100 %.
+pub fn scaled(pts: &[CurvePoint], scale: f64) -> Vec<CurvePoint> {
+    pts.iter()
+        .map(|p| CurvePoint {
+            lux: p.lux,
+            percent: (p.percent * scale).min(100.0),
+        })
+        .collect()
+}
+
+/// New scale so that the curve (base % `base` at the current input) gives
+/// `percent`: the whole curve moves, like the Windows slider.
+fn rescale(base: f64, percent: f64, old: f64) -> f64 {
+    if base > 0.05 {
+        sanitize_scale(percent / base)
+    } else {
+        old
+    }
+}
+
 /// One hotkey step: multiplicative, so steps feel even at low and high levels.
 pub fn step_level(current: u32, up: bool, cfg: &Config) -> u32 {
     let cur = current.max(MIN_LEVEL) as f64;
@@ -235,12 +269,11 @@ pub fn step_level(current: u32, up: bool, cfg: &Config) -> u32 {
     (next.round() as i64).clamp(MIN_LEVEL as i64, MAX_LEVEL as i64) as u32
 }
 
-/// Laptop panel smoothing time constant.
-const PANEL_TAU: Duration = Duration::from_millis(1000);
 // Thresholds are relative (% of the current level) – brightness is seen
 // on a ratio scale, so 100 -> 246 matters as much as 10000 -> 24600.
-const FOLLOW_MOVING_PCT: f64 = 6.0;
-const FOLLOW_SETTLED_PCT: f64 = 2.5;
+/// Follow laptop: the laptop value is already smooth (Windows animates
+/// it), so every visible change is passed on at once.
+const FOLLOW_PCT: f64 = 1.0;
 /// Settled light sensor: ignore the LG sensor's ±1-2 lx noise.
 const SENSOR_SETTLED_PCT: f64 = 8.0;
 /// Smallest change ever sent, in levels.
@@ -316,6 +349,8 @@ pub struct Controller {
     laptop: Option<Laptop>,
     curve: Vec<CurvePoint>,
     follow: Vec<CurvePoint>,
+    curve_scale: f64,
+    follow_scale: f64,
 }
 
 impl Controller {
@@ -329,6 +364,8 @@ impl Controller {
             laptop: None,
             curve: Vec::new(),
             follow: Vec::new(),
+            curve_scale: 1.0,
+            follow_scale: 1.0,
             cfg: Config::default(),
         };
         c.reconfigure(cfg);
@@ -341,6 +378,8 @@ impl Controller {
         self.auto_mode = cfg.auto_mode;
         self.curve = sanitize_curve(cfg.curve.clone());
         self.follow = follow_to_points(&sanitize_follow(cfg.follow()));
+        self.curve_scale = sanitize_scale(cfg.curve_scale);
+        self.follow_scale = sanitize_scale(cfg.follow_scale);
         self.cfg = cfg;
     }
 
@@ -362,6 +401,22 @@ impl Controller {
     }
     pub fn follow_curve(&self) -> &[CurvePoint] {
         &self.follow
+    }
+    pub fn curve_scale(&self) -> f64 {
+        self.curve_scale
+    }
+    pub fn follow_scale(&self) -> f64 {
+        self.follow_scale
+    }
+
+    /// LG % the light-sensor curve gives at `lux` (scale applied).
+    fn light_pct(&self, lux: f64) -> f64 {
+        (curve_percent(&self.curve, lux) * self.curve_scale).min(100.0)
+    }
+
+    /// LG % the follow curve gives at laptop `panel` % (scale applied).
+    fn follow_pct(&self, panel: f64) -> f64 {
+        (eval(&self.follow, Axis::Percent, panel) * self.follow_scale).min(100.0)
     }
 
     /// Smoothed lux of the LG sensor.
@@ -398,11 +453,14 @@ impl Controller {
     pub fn set_auto_mode(&mut self, m: AutoMode) {
         self.auto_mode = m;
     }
+    /// Edited curve (as shown, scale included): becomes the base, scale 1.
     pub fn set_curve(&mut self, pts: Vec<CurvePoint>) {
         self.curve = sanitize_curve(pts);
+        self.curve_scale = 1.0;
     }
     pub fn set_follow_curve(&mut self, pts: Vec<CurvePoint>) {
         self.follow = sanitize_on(pts, Axis::Percent, default_follow_points);
+        self.follow_scale = 1.0;
     }
 
     /// The display reported / accepted this level.
@@ -427,7 +485,8 @@ impl Controller {
     pub fn on_laptop(&mut self, laptop: Option<Laptop>, now: Instant) -> Option<u32> {
         self.laptop = laptop;
         match laptop {
-            Some(l) if l.lid_open => Smooth::set(&mut self.panel, l.panel as f64, now, PANEL_TAU),
+            // Not smoothed: Windows already animates the laptop panel.
+            Some(l) if l.lid_open => self.panel = Some(Smooth::new(l.panel as f64, now)),
             _ => self.panel = None,
         }
         self.tick(now)
@@ -439,24 +498,15 @@ impl Controller {
         if let Some(s) = self.lg.as_mut() {
             s.advance(now, lux_tau);
         }
-        if let Some(p) = self.panel.as_mut() {
-            p.advance(now, PANEL_TAU);
-        }
         match self.mode() {
             Mode::Manual => None,
             Mode::LaptopSync => {
                 let p = self.panel?;
-                let target = percent_to_level(eval(&self.follow, Axis::Percent, p.value));
-                let pct = if p.settled(0.25) {
-                    FOLLOW_SETTLED_PCT
-                } else {
-                    FOLLOW_MOVING_PCT
-                };
-                self.if_far(target, pct)
+                self.if_far(percent_to_level(self.follow_pct(p.value)), FOLLOW_PCT)
             }
             Mode::LightSensor => {
                 let s = self.lg?;
-                let target = percent_to_level(curve_percent(&self.curve, x_lux(s.value)));
+                let target = percent_to_level(self.light_pct(x_lux(s.value)));
                 let pct = if s.settled(0.01) {
                     SENSOR_SETTLED_PCT.min(self.cfg.apply_threshold_percent)
                 } else {
@@ -475,22 +525,41 @@ impl Controller {
     }
 
     /// The user chose `level` (hotkey or preset). Automatic mode keeps
-    /// running and the active curve learns the choice for the current input
-    /// (light level, or laptop screen %).
+    /// running and the active curve takes the choice for the current input
+    /// (light level, or laptop screen %): the whole curve moves (default,
+    /// like Windows) or only the nearest point.
     pub fn on_manual(&mut self, level: u32) {
         let pct = level_to_percent(level);
+        let whole = self.cfg.adjust == Adjust::WholeCurve;
         match self.mode() {
             Mode::LaptopSync => {
-                if let Some(p) = self.panel.as_mut() {
+                let Some(v) = self.panel.as_mut().map(|p| {
                     p.snap();
-                    learn_on(&mut self.follow, Axis::Percent, p.raw, pct);
+                    p.raw
+                }) else {
+                    return;
+                };
+                let base = eval(&self.follow, Axis::Percent, v);
+                if whole {
+                    self.follow_scale = rescale(base, pct, self.follow_scale);
+                } else {
+                    let b = (pct / self.follow_scale).min(100.0);
+                    learn_on(&mut self.follow, Axis::Percent, v, b);
                 }
             }
             Mode::LightSensor => {
-                if let Some(s) = self.lg.as_mut() {
-                    // Learn for the light level now, not a half-way value.
+                // For the light level now, not a half-way value.
+                let Some(lux) = self.lg.as_mut().map(|s| {
                     s.snap();
-                    learn(&mut self.curve, x_lux(s.raw), pct);
+                    x_lux(s.raw)
+                }) else {
+                    return;
+                };
+                let base = curve_percent(&self.curve, lux);
+                if whole {
+                    self.curve_scale = rescale(base, pct, self.curve_scale);
+                } else {
+                    learn(&mut self.curve, lux, (pct / self.curve_scale).min(100.0));
                 }
             }
             Mode::Manual => {}
@@ -501,12 +570,8 @@ impl Controller {
     pub fn auto_target(&self) -> Option<u32> {
         let target = match self.mode() {
             Mode::Manual => return None,
-            Mode::LaptopSync => {
-                percent_to_level(eval(&self.follow, Axis::Percent, self.panel?.value))
-            }
-            Mode::LightSensor => {
-                percent_to_level(curve_percent(&self.curve, x_lux(self.lg?.value)))
-            }
+            Mode::LaptopSync => percent_to_level(self.follow_pct(self.panel?.value)),
+            Mode::LightSensor => percent_to_level(self.light_pct(x_lux(self.lg?.value))),
         };
         match self.level {
             Some(cur) if cur == target => None,
@@ -794,12 +859,80 @@ mod tests {
     }
 
     #[test]
-    fn manual_change_teaches_light_curve() {
+    fn manual_change_scales_the_whole_light_curve() {
         let mut sim = Sim::new(cfg(), 14307);
+        sim.lux(18);
+        sim.run(10.0);
+        let before = sim.ctl.curve().to_vec();
+        let next = sim.ctl.on_step(false).unwrap();
+        sim.ctl.set_known_level(next);
+        assert_eq!(sim.ctl.curve(), &before[..], "points stay");
+        let s = sim.ctl.curve_scale();
+        assert!(s < 1.0, "{s}");
+        let applied = scaled(sim.ctl.curve(), s);
+        assert!((curve_percent(&applied, 18.0) - level_to_percent(next)).abs() < 1e-6);
+        sim.writes.clear();
+        sim.run(10.0);
+        assert!(sim.writes.is_empty(), "no pull-back: {:?}", sim.writes);
+        // Other light levels move by the same factor (like Windows).
+        sim.lux(300);
+        sim.run(20.0);
+        assert!(near(
+            sim.level(),
+            percent_to_level(65.0 * s),
+            SENSOR_SETTLED_PCT
+        ));
+        // Back up again: scale returns, nothing is lost at the top.
+        let mut sim2 = Sim::new(cfg(), 14307);
+        sim2.lux(18);
+        sim2.run(10.0);
+        for _ in 0..3 {
+            let n = sim2.ctl.on_step(true).unwrap();
+            sim2.ctl.set_known_level(n);
+        }
+        for _ in 0..3 {
+            let n = sim2.ctl.on_step(false).unwrap();
+            sim2.ctl.set_known_level(n);
+        }
+        assert!(
+            (sim2.ctl.curve_scale() - 1.0).abs() < 0.02,
+            "{}",
+            sim2.ctl.curve_scale()
+        );
+        assert_eq!(sim2.ctl.curve(), &default_curve()[..]);
+    }
+
+    #[test]
+    fn scale_is_bounded_and_capped_at_100() {
+        let mut sim = Sim::new(cfg(), 14307);
+        sim.lux(1);
+        sim.run(10.0);
+        sim.ctl.on_manual(MAX_LEVEL);
+        assert_eq!(sim.ctl.curve_scale(), SCALE_MAX);
+        assert!(scaled(sim.ctl.curve(), SCALE_MAX)
+            .iter()
+            .all(|p| p.percent <= 100.0));
+        sim.ctl.on_manual(MIN_LEVEL);
+        assert!(sim.ctl.curve_scale() >= SCALE_MIN);
+        // Editing the curve bakes the scale in: scale back to 1.
+        sim.ctl.set_curve(default_curve());
+        assert_eq!(sim.ctl.curve_scale(), 1.0);
+    }
+
+    #[test]
+    fn nearest_point_adjust_teaches_light_curve() {
+        let mut sim = Sim::new(
+            Config {
+                adjust: Adjust::NearestPoint,
+                ..cfg()
+            },
+            14307,
+        );
         sim.lux(18);
         sim.run(10.0);
         let next = sim.ctl.on_step(false).unwrap();
         sim.ctl.set_known_level(next);
+        assert_eq!(sim.ctl.curve_scale(), 1.0);
         assert!((curve_percent(sim.ctl.curve(), 18.0) - level_to_percent(next)).abs() < 1e-6);
         sim.writes.clear();
         sim.run(10.0);
@@ -847,7 +980,7 @@ mod tests {
         sim.run(5.0);
         let want = follow_level(&default_follow_points(), 66.0);
         assert!(
-            near(sim.level(), want, FOLLOW_SETTLED_PCT),
+            near(sim.level(), want, FOLLOW_PCT),
             "{} vs {want}",
             sim.level()
         );
@@ -862,23 +995,35 @@ mod tests {
         sim.run(10.0);
         let want = follow_level(&default_follow_points(), 33.0);
         assert!(
-            near(sim.level(), want, FOLLOW_SETTLED_PCT),
+            near(sim.level(), want, FOLLOW_PCT),
             "{} vs {want}",
             sim.level()
         );
     }
 
     #[test]
-    fn follow_small_wobble_is_ignored() {
+    fn follow_reacts_immediately_like_the_laptop() {
         let mut sim = Sim::new(follow(), 14307);
         sim.laptop(lap(60, true));
-        sim.run(5.0);
+        sim.run(1.0);
+        // Fn key: 60 -> 70 % is passed on in one write, no smoothing delay.
         sim.writes.clear();
-        for p in [61, 60, 61, 60, 61, 60] {
+        sim.laptop(lap(70, true));
+        assert_eq!(
+            sim.writes,
+            vec![follow_level(&default_follow_points(), 70.0)]
+        );
+        // Adaptive brightness moving 1 % at a time: every step follows.
+        sim.writes.clear();
+        for p in (60..70).rev() {
             sim.laptop(lap(p, true));
-            sim.run(0.3);
+            sim.run(0.5);
         }
-        assert!(sim.writes.len() <= 1, "{:?}", sim.writes);
+        assert_eq!(sim.writes.len(), 10, "{:?}", sim.writes);
+        // No change, no writes.
+        sim.writes.clear();
+        sim.run(5.0);
+        assert!(sim.writes.is_empty());
     }
 
     #[test]
@@ -891,21 +1036,20 @@ mod tests {
         assert!(near(
             sim.level(),
             follow_level(&default_follow_points(), 0.0),
-            FOLLOW_SETTLED_PCT
+            FOLLOW_PCT
         ));
     }
 
     #[test]
-    fn manual_change_teaches_follow_curve() {
+    fn manual_change_scales_the_follow_curve() {
         let mut sim = Sim::new(follow(), 14307);
         sim.laptop(lap(66, true));
         sim.run(5.0);
         let next = sim.ctl.on_step(true).unwrap();
         sim.ctl.set_known_level(next);
-        assert!(
-            (eval(sim.ctl.follow_curve(), Axis::Percent, 66.0) - level_to_percent(next)).abs()
-                < 1e-6
-        );
+        assert_eq!(sim.ctl.follow_curve(), &default_follow_points()[..]);
+        let applied = scaled(sim.ctl.follow_curve(), sim.ctl.follow_scale());
+        assert!((eval(&applied, Axis::Percent, 66.0) - level_to_percent(next)).abs() < 1e-6);
         sim.writes.clear();
         sim.run(5.0);
         assert!(sim.writes.is_empty(), "no pull-back: {:?}", sim.writes);
@@ -934,7 +1078,7 @@ mod tests {
         assert!(near(
             sim.level(),
             follow_level(&default_follow_points(), 60.0),
-            FOLLOW_SETTLED_PCT
+            FOLLOW_PCT
         ));
     }
 
