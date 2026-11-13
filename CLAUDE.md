@@ -68,7 +68,7 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
   admin: `SetDisplayConfig(SDC_APPLY | SDC_USE_DATABASE_CURRENT)`. Plan:
   on display change / LG HID arrival, if the persisted topology
   (`QueryDisplayConfig(QDC_DATABASE_CURRENT)`) has the LG active but the
-  live one does not (`win_check` verifies this), re-apply (configurable, on by default; a
+  live one does not (**verified** in the black state 2026-11-13), re-apply (configurable, on by default; a
   user who deliberately disabled the LG display turns it off). Also a tray
   item "Reset display". See `docs/PROTOCOL.md` (Windows).
 

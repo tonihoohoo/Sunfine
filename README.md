@@ -16,4 +16,5 @@ driver fails, which hides the sensor. Once (needs admin):
 3. Choose **HID-compliant device** -> Next
 
 Brightness hotkeys work without this. Revert by picking "HID Ambient Light
-Sensor" again. Using a different port may require repeating it.
+Sensor" again. If Windows ever restores its sensor driver (e.g. after an
+update), repeat it.
