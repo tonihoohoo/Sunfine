@@ -15,8 +15,7 @@ that adds:
 - an editable brightness curve that learns from your manual adjustments
 - a fix for the LG staying black after it is plugged in
 
-Current version: 0.7. The repository, the exe and the settings folder are
-still called `ultrafine-ctl`. The USB protocol was reverse-engineered and is
+Current version: 0.7 (formerly `ultrafine-ctl`). The USB protocol was reverse-engineered and is
 documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 > Not affiliated with or endorsed by LG Electronics or Apple. Use at your own
@@ -24,7 +23,7 @@ documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 ## Download
 
-Get `ultrafine-ctl-windows-x64.exe` from the
+Get `sunfine-windows-x64.exe` from the
 [latest release](../../releases/latest) (or, for the newest build, from the
 artifacts of the latest [Actions](../../actions) run) and start it. A sun
 icon appears in the tray. To start it with Windows, put a shortcut to the
@@ -34,8 +33,9 @@ The exe is unsigned, so SmartScreen may warn the first time, and Windows may
 run a cloud security scan when a new version starts for the first time.
 Later starts are fast.
 
-Only one copy runs at a time: starting a new version closes the old one
-(versions before 0.6 must be quit from the tray menu once).
+Only one copy runs at a time: starting a new version closes the old one,
+including a running `ultrafine-ctl` (versions before 0.6 must be quit from
+the tray menu once).
 
 ## Tray menu
 
@@ -104,8 +104,10 @@ display on purpose.
 
 ## Settings
 
-Settings live in `%APPDATA%\ultrafine-ctl\config.toml` (tray: *Open
-settings file*). Most are in the menu; these are only in the file:
+Settings live in `%APPDATA%\Sunfine\config\config.toml` (tray: *Open
+settings file*). On first start, settings from `ultrafine-ctl`
+(`%APPDATA%\ultrafine-ctl\config\config.toml`) are copied over; the old
+file is left in place. Most are in the menu; these are only in the file:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
@@ -121,7 +123,7 @@ settings file*). Most are in the menu; these are only in the file:
 Editing the file while the app runs is fine: the app picks up the change.
 If the file has an error, the app uses defaults and does not overwrite it.
 
-Log file: `ultrafine-ctl.log` next to the settings file.
+Log file: `sunfine.log` next to the settings file.
 
 ## Limitations
 
@@ -140,7 +142,7 @@ Requires Rust 1.90 or newer.
 cargo build --release
 ```
 
-On Windows this produces a single static `ultrafine-ctl.exe` (the C runtime
+On Windows this produces a single static `sunfine.exe` (the C runtime
 is linked statically, see `.cargo/config.toml`). `cargo test` runs the unit
 tests and also renders preview images of the popup and the curve editor
 (`target/osd_preview_*.png`, `target/editor_preview_*.png`) for a visual check.
