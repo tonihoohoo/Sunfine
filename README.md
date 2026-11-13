@@ -21,6 +21,22 @@ documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 > Not affiliated with or endorsed by LG Electronics or Apple. Use at your own
 > risk.
 
+## Screenshots
+
+The brightness popup that appears on the LG (dark and light theme), and the
+curve editor for the light-sensor curve (dark) and the follow-laptop curve
+(light). Both follow the Windows theme and accent colour. These are rendered
+by `cargo test` (see [Building](#building)).
+
+<p>
+  <img src="docs/screenshots/popup-dark.png" width="300" alt="Brightness popup, dark theme">
+  <img src="docs/screenshots/popup-light.png" width="300" alt="Brightness popup, light theme">
+</p>
+<p>
+  <img src="docs/screenshots/curve-light-sensor-dark.png" width="420" alt="Light-sensor curve editor, dark theme">
+  <img src="docs/screenshots/curve-follow-laptop-light.png" width="420" alt="Follow-laptop curve editor, light theme">
+</p>
+
 ## Download
 
 Get `sunfine-windows-x64.exe` from the
