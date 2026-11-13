@@ -10,6 +10,7 @@ mod device;
 mod display_fix;
 mod editor;
 mod laptop;
+mod single;
 mod theme;
 mod ui;
 mod worker;
@@ -27,9 +28,9 @@ use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-use config::{AutoMode, Config, Hotkeys, LightSource};
+use config::{AutoMode, Config, Hotkeys};
 use curve::{level_to_percent, percent_to_level, Mode};
-use editor::{CurveEditor, EditorAction};
+use editor::{CurveEditor, CurveKind, EditorAction};
 use ui::{Action, Capture, CaptureResult, Osd, Painter};
 use worker::{Cmd, Status};
 
@@ -38,6 +39,8 @@ enum UserEvent {
     Menu(MenuEvent),
     HotKey(GlobalHotKeyEvent),
     Status(Status),
+    /// A newer copy started and asked this one to quit.
+    Quit,
 }
 
 /// Registered global shortcuts.
@@ -209,9 +212,6 @@ struct Menus {
     mode_manual: CheckMenuItem,
     mode_sensor: CheckMenuItem,
     mode_follow: CheckMenuItem,
-    sensor: Submenu,
-    sensor_lg: CheckMenuItem,
-    sensor_laptop: CheckMenuItem,
     curve: MenuItem,
     sc_up: MenuItem,
     sc_down: MenuItem,
@@ -241,9 +241,6 @@ impl Menus {
             mode_manual: CheckMenuItem::new("Manual", true, false, None),
             mode_sensor: CheckMenuItem::new("Automatic – light sensor", true, false, None),
             mode_follow: CheckMenuItem::new("Automatic – follow laptop screen", true, false, None),
-            sensor: Submenu::new("Light sensor", true),
-            sensor_lg: CheckMenuItem::new("LG display", true, false, None),
-            sensor_laptop: CheckMenuItem::new("Laptop", true, false, None),
             curve: MenuItem::new("Brightness curve…", true, None),
             sc_up: MenuItem::new("", true, None),
             sc_down: MenuItem::new("", true, None),
@@ -258,7 +255,6 @@ impl Menus {
         for (_, item) in &m.presets {
             m.brightness.append(item)?;
         }
-        m.sensor.append_items(&[&m.sensor_lg, &m.sensor_laptop])?;
         let mode = Submenu::with_items(
             "Mode",
             true,
@@ -284,7 +280,6 @@ impl Menus {
             &m.down,
             &PredefinedMenuItem::separator(),
             &mode,
-            &m.sensor,
             &m.curve,
             &PredefinedMenuItem::separator(),
             &shortcuts,
@@ -349,21 +344,8 @@ impl Menus {
         if ch(&|o| o.follow != v.follow) {
             self.mode_follow.set_text(&v.follow);
         }
-        if ch(&|o| o.sensor_enabled != v.sensor_enabled) {
-            self.sensor.set_enabled(v.sensor_enabled);
-        }
-        if ch(&|o| o.sensor != v.sensor) {
-            self.sensor.set_text(&v.sensor);
-        }
-        if ch(&|o| o.sensor_laptop != v.sensor_laptop) {
-            self.sensor_lg.set_checked(!v.sensor_laptop);
-            self.sensor_laptop.set_checked(v.sensor_laptop);
-        }
-        if ch(&|o| o.sensor_laptop_enabled != v.sensor_laptop_enabled) {
-            self.sensor_laptop.set_enabled(v.sensor_laptop_enabled);
-        }
-        if ch(&|o| o.sensor_laptop_text != v.sensor_laptop_text) {
-            self.sensor_laptop.set_text(&v.sensor_laptop_text);
+        if ch(&|o| o.curve != v.curve) {
+            self.curve.set_text(&v.curve);
         }
         if ch(&|o| o.curve_enabled != v.curve_enabled) {
             self.curve.set_enabled(v.curve_enabled);
@@ -403,11 +385,8 @@ struct MenuView {
     mode: ModeView,
     follow: String,
     follow_enabled: bool,
-    sensor: String,
-    sensor_enabled: bool,
-    sensor_laptop: bool,
-    sensor_laptop_text: String,
-    sensor_laptop_enabled: bool,
+    /// "Brightness curve…" label for the curve of the selected mode.
+    curve: String,
     curve_enabled: bool,
     shortcuts: [String; 3],
     osd: bool,
@@ -417,19 +396,11 @@ struct MenuView {
 fn menu_view(cfg: &Config, s: Option<&Status>) -> MenuView {
     let connected = s.is_some_and(|s| s.connected);
     let laptop = s.and_then(|s| s.laptop);
-    let follow_available = laptop.is_some_and(|l| l.lid_open && l.panel > 0);
-    let laptop_sensor_available = laptop.is_some_and(|l| l.lid_open && l.lux.is_some());
+    let follow_available = laptop.is_some_and(|l| l.lid_open);
     let mode = match (cfg.auto, cfg.auto_mode) {
         (false, _) => ModeView::Manual,
         (true, AutoMode::LightSensor) => ModeView::LightSensor,
         (true, AutoMode::FollowLaptop) => ModeView::FollowLaptop,
-    };
-    // The light sensor is in use in light-sensor mode, and in follow mode
-    // while it falls back (lid closed / no laptop data).
-    let sensor_in_use = match mode {
-        ModeView::Manual => false,
-        ModeView::LightSensor => true,
-        ModeView::FollowLaptop => s.is_none_or(|s| s.mode == Mode::LightSensor),
     };
     let pct = s
         .filter(|s| s.connected)
@@ -442,7 +413,6 @@ fn menu_view(cfg: &Config, s: Option<&Status>) -> MenuView {
             .min_by(|a, b| (*a as f64 - p).abs().total_cmp(&(*b as f64 - p).abs()))
     });
     let follow_selected = mode == ModeView::FollowLaptop;
-    let laptop_src = cfg.light_source == LightSource::Laptop;
     MenuView {
         status: s
             .map(status_text)
@@ -463,22 +433,11 @@ fn menu_view(cfg: &Config, s: Option<&Status>) -> MenuView {
             "Automatic – follow laptop screen (needs the lid open)".into()
         },
         follow_enabled: follow_available || follow_selected,
-        sensor: if sensor_in_use {
-            "Light sensor".into()
-        } else {
-            "Light sensor (not used now)".into()
+        curve: match mode {
+            ModeView::FollowLaptop => "Brightness curve (follow laptop)…".into(),
+            _ => "Brightness curve (light sensor)…".into(),
         },
-        sensor_enabled: sensor_in_use,
-        sensor_laptop: laptop_src,
-        sensor_laptop_text: if laptop_sensor_available {
-            "Laptop".into()
-        } else if laptop_src {
-            "Laptop (lid closed: using LG display)".into()
-        } else {
-            "Laptop (needs the lid open)".into()
-        },
-        sensor_laptop_enabled: laptop_sensor_available || laptop_src,
-        curve_enabled: sensor_in_use,
+        curve_enabled: mode != ModeView::Manual,
         shortcuts: [
             format!("Brighter: {}…", cfg.hotkeys.up),
             format!("Darker: {}…", cfg.hotkeys.down),
@@ -516,6 +475,12 @@ fn run() -> Result<()> {
         use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
         event_loop.set_activation_policy(ActivationPolicy::Accessory);
     }
+
+    // One copy at a time: a newer one replaces an older one.
+    let proxy = event_loop.create_proxy();
+    let _instance = single::acquire(move || {
+        let _ = proxy.send_event(UserEvent::Quit);
+    });
 
     // Device worker thread.
     let (tx, rx) = mpsc::channel::<Cmd>();
@@ -574,6 +539,7 @@ fn run() -> Result<()> {
     let mut next_file_check = Instant::now() + Duration::from_secs(2);
     let mut tooltip = String::new();
 
+    let proxy_quit = event_loop.create_proxy();
     event_loop.run(move |event, target, control_flow| {
         let send = |c: Cmd| {
             let _ = tx.send(c);
@@ -592,13 +558,18 @@ fn run() -> Result<()> {
             set_auto(cfg, true, save_at);
         };
         let open_editor = |cfg: &Config, editor: &mut Option<CurveEditor>, st: Option<&Status>| {
-            if editor.is_some() {
+            let kind = curve_kind(cfg);
+            if editor.as_ref().is_some_and(|e| e.kind() == kind) {
                 return;
             }
-            match CurveEditor::new(target, painter.clone(), cfg.curve.clone()) {
+            let points = match kind {
+                CurveKind::Light => cfg.curve.clone(),
+                CurveKind::Follow => curve::follow_to_points(&cfg.follow()),
+            };
+            match CurveEditor::new(target, painter.clone(), kind, points) {
                 Ok(mut e) => {
                     if let Some(s) = st {
-                        e.update(s.lux, &s.curve);
+                        update_editor(&mut e, s);
                     }
                     *editor = Some(e);
                 }
@@ -651,14 +622,6 @@ fn run() -> Result<()> {
                     set_mode(&mut cfg, AutoMode::LightSensor, &mut save_at);
                 } else if id == m.mode_follow.id() {
                     set_mode(&mut cfg, AutoMode::FollowLaptop, &mut save_at);
-                } else if id == m.sensor_lg.id() || id == m.sensor_laptop.id() {
-                    cfg.light_source = if id == m.sensor_laptop.id() {
-                        LightSource::Laptop
-                    } else {
-                        LightSource::Display
-                    };
-                    send(Cmd::SetSource(cfg.light_source));
-                    mark_dirty(&mut save_at);
                 } else if id == m.curve.id() {
                     open_editor(&cfg, &mut editor, last_status.as_ref());
                 } else if id == m.sc_up.id() {
@@ -690,18 +653,22 @@ fn run() -> Result<()> {
                         open_file(&p);
                     }
                 } else if id == m.quit.id() {
-                    if save_at.is_some() {
-                        store.save(&cfg);
-                    }
-                    send(Cmd::Quit);
-                    if let Some(w) = worker.take() {
-                        let _ = w.join();
-                    }
-                    tray = None;
-                    *control_flow = ControlFlow::Exit;
+                    let _ = proxy_quit.send_event(UserEvent::Quit);
                     return;
                 }
                 menus.refresh(&cfg, last_status.as_ref());
+            }
+            Event::UserEvent(UserEvent::Quit) => {
+                if save_at.is_some() {
+                    store.save(&cfg);
+                }
+                send(Cmd::Quit);
+                if let Some(w) = worker.take() {
+                    let _ = w.join();
+                }
+                tray = None;
+                *control_flow = ControlFlow::Exit;
+                return;
             }
             Event::UserEvent(UserEvent::HotKey(e)) if e.state == HotKeyState::Pressed => {
                 let action = shortcuts.action(e.id);
@@ -726,10 +693,11 @@ fn run() -> Result<()> {
                         tooltip = text;
                     }
                 }
-                // The worker learns (sync offset, curve points): persist.
-                if s.sync_cal != cfg.sync_cal || s.curve != cfg.curve {
-                    cfg.sync_cal = s.sync_cal;
+                // The worker learns curve points: persist.
+                let follow = Some(curve::points_to_follow(&s.follow_curve));
+                if s.curve != cfg.curve || follow != cfg.follow_curve {
                     cfg.curve = s.curve.clone();
+                    cfg.follow_curve = follow;
                     mark_dirty(&mut save_at);
                 }
                 if s.manual_seq != last_seq {
@@ -743,7 +711,7 @@ fn run() -> Result<()> {
                     }
                 }
                 if let Some(e) = editor.as_mut() {
-                    e.update(s.lux, &s.curve);
+                    update_editor(e, &s);
                 }
                 menus.update(&cfg, Some(&s));
                 last_status = Some(s);
@@ -751,11 +719,22 @@ fn run() -> Result<()> {
             Event::WindowEvent {
                 window_id, event, ..
             } => {
+                if let Some(o) = osd.as_mut().filter(|o| o.id() == window_id) {
+                    o.handle(&event);
+                }
                 if let Some(e) = editor.as_mut().filter(|e| e.id() == window_id) {
                     match e.handle(&event) {
                         Some(EditorAction::Changed(pts)) => {
-                            cfg.curve = pts.clone();
-                            send(Cmd::SetCurve(pts));
+                            match e.kind() {
+                                CurveKind::Light => {
+                                    cfg.curve = pts.clone();
+                                    send(Cmd::SetCurve(pts));
+                                }
+                                CurveKind::Follow => {
+                                    cfg.follow_curve = Some(curve::points_to_follow(&pts));
+                                    send(Cmd::SetFollowCurve(pts));
+                                }
+                            }
                             mark_dirty(&mut save_at);
                         }
                         Some(EditorAction::Close) => editor = None,
@@ -862,23 +841,32 @@ fn run() -> Result<()> {
 }
 
 fn panel_status(s: &Status) -> String {
-    let src = match s.source {
-        LightSource::Display => "LG sensor",
-        LightSource::Laptop => "laptop sensor",
-    };
     match s.mode {
         Mode::Manual => "manual".into(),
-        Mode::LaptopSync => s
-            .laptop
-            .map(|l| format!("follows laptop ({} %)", l.panel))
-            .unwrap_or_default(),
-        Mode::LightSensor if !s.light_sensor && s.source == LightSource::Display => {
-            "LG sensor not readable".into()
-        }
-        Mode::LightSensor => match s.lux {
-            Some(l) => format!("auto · {l:.0} lx ({src})"),
-            None => format!("auto · waiting for {src}"),
+        Mode::LaptopSync => match s.panel {
+            Some(p) => format!("follows laptop ({p:.0} %)"),
+            None => "follows laptop".into(),
         },
+        Mode::LightSensor if !s.light_sensor => "LG sensor not readable".into(),
+        Mode::LightSensor => match s.lux {
+            Some(l) => format!("auto · {l:.0} lx"),
+            None => "auto · waiting for the light sensor".into(),
+        },
+    }
+}
+
+/// Which curve the editor shows: the one of the selected automatic mode.
+fn curve_kind(cfg: &Config) -> CurveKind {
+    match cfg.auto_mode {
+        AutoMode::FollowLaptop => CurveKind::Follow,
+        AutoMode::LightSensor => CurveKind::Light,
+    }
+}
+
+fn update_editor(e: &mut CurveEditor, s: &Status) {
+    match e.kind() {
+        CurveKind::Light => e.update(s.lux, &s.curve),
+        CurveKind::Follow => e.update(s.panel, &s.follow_curve),
     }
 }
 
@@ -983,7 +971,7 @@ fn open_file(p: &std::path::Path) {
 fn mode_short(s: &Status) -> &'static str {
     match s.mode {
         Mode::Manual => "manual",
-        Mode::LightSensor if !s.light_sensor && s.source == LightSource::Display => "manual",
+        Mode::LightSensor if !s.light_sensor => "manual",
         Mode::LightSensor => "auto",
         Mode::LaptopSync => "follows laptop",
     }
@@ -1034,21 +1022,28 @@ mod tests {
             lux: Some(18.0),
             auto: mode != Mode::Manual,
             mode,
-            source: LightSource::Display,
+            panel: laptop.filter(|l| l.lid_open).map(|l| l.panel as f64),
             laptop,
-            sync_cal: None,
             curve: config::default_curve(),
+            follow_curve: curve::default_follow_points(),
             manual_seq: 0,
         }
     }
 
-    fn lid(open: bool, lux: Option<f64>) -> Option<Laptop> {
+    fn lid(open: bool) -> Option<Laptop> {
         Some(Laptop {
             panel: 60,
             adaptive: true,
             lid_open: open,
-            lux,
         })
+    }
+
+    fn auto(m: AutoMode) -> Config {
+        Config {
+            auto: true,
+            auto_mode: m,
+            ..Config::default()
+        }
     }
 
     #[test]
@@ -1066,10 +1061,7 @@ mod tests {
 
     #[test]
     fn preset_tick_is_nearest() {
-        let cfg = Config {
-            auto: false,
-            ..Config::default()
-        };
+        let cfg = Config::default();
         for (level, want) in [
             (14307, 30),
             (54000, 100),
@@ -1085,100 +1077,67 @@ mod tests {
     }
 
     #[test]
-    fn manual_mode_greys_sensor_and_curve() {
-        let cfg = Config {
-            auto: false,
-            ..Config::default()
-        };
+    fn manual_mode_greys_curve() {
         let v = menu_view(
-            &cfg,
-            Some(&status(Mode::Manual, lid(true, Some(10.0)), 14307)),
+            &Config::default(),
+            Some(&status(Mode::Manual, lid(true), 14307)),
         );
         assert_eq!(v.mode, ModeView::Manual);
-        assert!(!v.sensor_enabled);
         assert!(!v.curve_enabled);
         assert!(v.follow_enabled, "can switch to follow with lid open");
     }
 
     #[test]
+    fn curve_item_names_the_curve_of_the_mode() {
+        let v = menu_view(
+            &auto(AutoMode::FollowLaptop),
+            Some(&status(Mode::LaptopSync, lid(true), 14307)),
+        );
+        assert!(v.curve_enabled);
+        assert!(v.curve.contains("follow laptop"), "{}", v.curve);
+        let v = menu_view(
+            &auto(AutoMode::LightSensor),
+            Some(&status(Mode::LightSensor, lid(true), 14307)),
+        );
+        assert!(v.curve.contains("light sensor"), "{}", v.curve);
+        assert_eq!(curve_kind(&auto(AutoMode::FollowLaptop)), CurveKind::Follow);
+        assert_eq!(curve_kind(&auto(AutoMode::LightSensor)), CurveKind::Light);
+    }
+
+    #[test]
     fn follow_mode_states() {
-        let cfg = Config {
-            auto: true,
-            auto_mode: AutoMode::FollowLaptop,
-            ..Config::default()
-        };
-        // Following: sensor not used.
-        let v = menu_view(
-            &cfg,
-            Some(&status(Mode::LaptopSync, lid(true, None), 14307)),
-        );
+        let cfg = auto(AutoMode::FollowLaptop);
+        let v = menu_view(&cfg, Some(&status(Mode::LaptopSync, lid(true), 14307)));
         assert_eq!(v.mode, ModeView::FollowLaptop);
-        assert!(!v.sensor_enabled && !v.curve_enabled);
         assert_eq!(v.follow, "Automatic – follow laptop screen");
-        // Lid closed: falls back, sensor + curve usable, follow stays selectable.
-        let v = menu_view(
-            &cfg,
-            Some(&status(Mode::LightSensor, lid(false, None), 14307)),
-        );
-        assert!(v.sensor_enabled && v.curve_enabled);
-        assert!(v.follow_enabled);
+        let v = menu_view(&cfg, Some(&status(Mode::LightSensor, lid(false), 14307)));
+        assert!(v.follow_enabled, "selected stays selectable");
         assert!(v.follow.contains("lid closed"));
     }
 
     #[test]
     fn follow_unavailable_when_not_selected() {
-        let cfg = Config {
-            auto: true,
-            auto_mode: AutoMode::LightSensor,
-            ..Config::default()
-        };
-        let v = menu_view(
-            &cfg,
-            Some(&status(Mode::LightSensor, lid(false, None), 14307)),
-        );
+        let cfg = auto(AutoMode::LightSensor);
+        let v = menu_view(&cfg, Some(&status(Mode::LightSensor, lid(false), 14307)));
         assert!(!v.follow_enabled);
         assert!(v.follow.contains("needs the lid open"));
         let v = menu_view(&cfg, Some(&status(Mode::LightSensor, None, 14307)));
         assert!(!v.follow_enabled, "no laptop panel (desktop)");
-    }
-
-    #[test]
-    fn laptop_sensor_option() {
-        let cfg = Config {
-            auto: true,
-            auto_mode: AutoMode::LightSensor,
-            ..Config::default()
-        };
-        let v = menu_view(
-            &cfg,
-            Some(&status(Mode::LightSensor, lid(true, Some(5.0)), 14307)),
-        );
-        assert!(v.sensor_laptop_enabled && !v.sensor_laptop);
-        let v = menu_view(
-            &cfg,
-            Some(&status(Mode::LightSensor, lid(true, None), 14307)),
-        );
-        assert!(!v.sensor_laptop_enabled, "no laptop sensor");
-        let cfg = Config {
-            light_source: LightSource::Laptop,
-            ..cfg
-        };
-        let v = menu_view(
-            &cfg,
-            Some(&status(Mode::LightSensor, lid(false, Some(5.0)), 14307)),
-        );
-        assert!(v.sensor_laptop && v.sensor_laptop_enabled);
-        assert!(v.sensor_laptop_text.contains("lid closed"));
+        // 0 % laptop brightness is still an open lid.
+        let mut s = status(Mode::LightSensor, lid(true), 14307);
+        s.laptop = Some(Laptop {
+            panel: 0,
+            adaptive: false,
+            lid_open: true,
+        });
+        assert!(menu_view(&cfg, Some(&s)).follow_enabled);
     }
 
     #[test]
     fn status_texts() {
         let s = status(Mode::LightSensor, None, 14307);
-        assert_eq!(
-            status_text(&s),
-            "LG UltraFine: 26 % (auto · 18 lx (LG sensor))"
-        );
-        let mut s = status(Mode::LaptopSync, lid(true, None), 27000);
+        assert_eq!(status_text(&s), "LG UltraFine: 26 % (auto · 18 lx)");
+        let mut s = status(Mode::LaptopSync, lid(true), 27000);
         assert_eq!(
             status_text(&s),
             "LG UltraFine: 50 % (follows laptop (60 %))"
@@ -1203,18 +1162,12 @@ mod tests {
 
     #[test]
     fn menu_view_is_stable_under_small_changes() {
-        // Flicker fix: tiny lux / laptop-lux changes must not change what
-        // the menu shows (no item would need repainting).
-        let cfg = Config {
-            auto: true,
-            auto_mode: AutoMode::LightSensor,
-            ..Config::default()
-        };
-        let mut a = status(Mode::LightSensor, lid(true, Some(10.0)), 15556);
+        // Flicker fix: tiny lux changes must not change what the menu shows.
+        let cfg = auto(AutoMode::LightSensor);
+        let mut a = status(Mode::LightSensor, lid(true), 15556);
         let mut b = a.clone();
         a.lux = Some(18.2);
         b.lux = Some(18.4);
-        b.laptop = lid(true, Some(11.0));
         assert_eq!(menu_view(&cfg, Some(&a)), menu_view(&cfg, Some(&b)));
     }
 }

@@ -5,7 +5,6 @@
 //! - adaptive brightness on/off: power setting ADAPTBRIGHT of the active
 //!   scheme for the current power source (AC / battery)
 //! - lid open: the internal panel has an active display path
-//! - laptop lux: WinRT `Windows.Devices.Sensors.LightSensor` default sensor
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Laptop {
@@ -15,8 +14,6 @@ pub struct Laptop {
     pub adaptive: bool,
     /// Internal panel is active (lid open, not "second screen only").
     pub lid_open: bool,
-    /// Laptop light sensor (Windows default LightSensor), lux.
-    pub lux: Option<f64>,
 }
 
 #[cfg(windows)]
@@ -61,23 +58,12 @@ mod imp {
     /// Not `Send`: create it on the thread that uses it (COM).
     pub struct Reader {
         wmi: wmi::WMIConnection,
-        sensor: Option<windows::Devices::Sensors::LightSensor>,
-        /// Last good reading; reused briefly when a reading fails so the
-        /// light source doesn't flip to the LG sensor on a hiccup.
-        last_lux: Option<(f64, std::time::Instant)>,
     }
 
     impl Reader {
         pub fn new() -> Result<Self> {
-            let sensor = windows::Devices::Sensors::LightSensor::GetDefault().ok();
-            log::info!(
-                "laptop light sensor: {}",
-                if sensor.is_some() { "found" } else { "none" }
-            );
             Ok(Self {
                 wmi: wmi::WMIConnection::with_namespace_path("ROOT\\WMI")?,
-                sensor,
-                last_lux: None,
             })
         }
 
@@ -98,38 +84,7 @@ mod imp {
                 panel,
                 adaptive: adaptive_enabled().unwrap_or(false),
                 lid_open: crate::display_fix::internal_panel_active().unwrap_or(true),
-                lux: self.lux(),
             })
-        }
-
-        fn lux(&mut self) -> Option<f64> {
-            let now = std::time::Instant::now();
-            let fresh = self
-                .sensor
-                .as_ref()
-                .and_then(|s| s.GetCurrentReading().ok())
-                .and_then(|r| r.IlluminanceInLux().ok())
-                .map(|l| l as f64)
-                // Coarse enough that sensor jitter doesn't send a new state
-                // twice a second: 0.1 lx in the dark, 1 lx above 10 lx.
-                .map(|l| {
-                    if l < 10.0 {
-                        (l * 10.0).round() / 10.0
-                    } else {
-                        l.round()
-                    }
-                })
-                .filter(|l| l.is_finite() && *l >= 0.0);
-            match fresh {
-                Some(l) => {
-                    self.last_lux = Some((l, now));
-                    Some(l)
-                }
-                None => self
-                    .last_lux
-                    .filter(|(_, t)| now.duration_since(*t).as_secs() < 5)
-                    .map(|(l, _)| l),
-            }
         }
     }
 
