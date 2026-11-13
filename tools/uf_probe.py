@@ -10,7 +10,7 @@ LG UltraFine HID probe (macOS / Windows / Linux, via hidapi).
 
 Descriptor findings (from ioreg dump):
   * Monitor page 0x80 / VESA 0x82 usage 0x10 = Brightness,
-    32-bit, logical 4..540 (likely nits), no report ID.
+    32-bit, no report ID. Observed range up to 54000 (descriptor's 4..540 is wrong).
     Feature report also carries a 16-bit transition time (ms).
   * Sensor page 0x20 usage 0x41 = Ambient Light.
     Input report, no report ID: 16-bit sensor event + 32-bit illuminance
@@ -98,7 +98,7 @@ def bright():
         print(f"raw={raw.hex(' ')}")
         if len(p) >= 6:
             level, dur = struct.unpack("<IH", p[:6])
-            print(f"brightness={level} (range 4..540)  transition={dur} ms")
+            print(f"brightness={level} (max 54000)  transition={dur} ms")
     finally:
         h.close()
 

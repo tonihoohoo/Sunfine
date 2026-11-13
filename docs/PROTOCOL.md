@@ -48,6 +48,30 @@ u32 LE  illuminance, lux (descriptor: 0..100000)
 - Descriptor also has feature fields: illuminance min/max, report interval
   (100–800 ms), change sensitivity (relative %, 0–100). Not yet exercised.
 
+## Windows (Dell Latitude 9430, Win 11 26200, 2026-11-13)
+
+Log: `docs/logs/win_diag_20261113.log`.
+
+- USB topology: laptop -> TB3/USB4 tunnel -> display's own Intel TB3 switch
+  (8086:15D3) -> Fresco Logic xHCI (1B73:1100) -> LG hubs 9A46/9A02 -> 9A40.
+- **Brightness works with hidapi** (`windows-native` equivalent): iface 1
+  visible as usage page 0x80, read 14307.
+- **ALS (iface 2) is taken by the Windows sensor class driver** and shows as
+  "HID Ambient Light Sensor" in class Sensor with status **Error**. hidapi does
+  not list usage page 0x20 at all, and WinRT `LightSensor` lists only the
+  laptop's own sensor (8087:0AC2). So neither planned path reads it as-is.
+  Problem code of the LG sensor device not yet known.
+- iface 0 product string is **"HID I2C"**, iface 1 "HID BRIGHTNESS" – iface 0
+  may be an I2C passthrough (possible alternative ALS path, unexplored).
+- "USB device not recognized" = `USB\VID_0000&PID_0002` (descriptor request
+  failed) on the laptop's **own** Intel xHCI (8086:51ED) root hub port 4, not
+  under the display's TB tree. Likely the display's USB 2.0 lines on the
+  Type-C port (unconfirmed: check whether it disappears when unplugged).
+- Black screen: at the same time everything LG enumerated and Windows reported
+  the LG monitor (GSM5B11) as active, **but the screen was black**. The fault
+  is on the DisplayPort/graphics side, not USB/HID.
+  **Win+Ctrl+Shift+B (graphics driver reset) brought the picture back.**
+
 ## Raw HID report descriptors (from ioreg)
 
 Monitor:
