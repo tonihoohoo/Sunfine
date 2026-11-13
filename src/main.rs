@@ -9,6 +9,7 @@ mod curve;
 mod device;
 mod display_fix;
 mod editor;
+mod guard;
 mod laptop;
 mod single;
 mod theme;
@@ -992,6 +993,9 @@ fn mode_short(s: &Status) -> &'static str {
 }
 
 fn status_text(s: &Status) -> String {
+    if s.not_responding {
+        return "LG UltraFine: not responding (power cycle the display)".into();
+    }
     if !s.connected {
         return "LG UltraFine: not connected".into();
     }
@@ -1043,6 +1047,7 @@ mod tests {
             curve_scale: 1.0,
             follow_scale: 1.0,
             manual_seq: 0,
+            not_responding: false,
         }
     }
 
@@ -1160,6 +1165,8 @@ mod tests {
         );
         s.connected = false;
         assert_eq!(status_text(&s), "LG UltraFine: not connected");
+        s.not_responding = true;
+        assert!(status_text(&s).contains("not responding"));
         let mut s = status(Mode::LightSensor, None, 14307);
         s.light_sensor = false;
         assert!(status_text(&s).contains("LG sensor not readable"));
