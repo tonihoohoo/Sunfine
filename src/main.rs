@@ -435,6 +435,8 @@ fn menu_view(cfg: &Config, s: Option<&Status>) -> MenuView {
             "Automatic – follow laptop screen".into()
         } else if follow_selected {
             "Automatic – follow laptop screen (lid closed: using light sensor)".into()
+        } else if cfg.lid_switched && cfg.auto {
+            "Automatic – follow laptop screen (back when the lid opens)".into()
         } else {
             "Automatic – follow laptop screen (needs the lid open)".into()
         },
@@ -539,6 +541,7 @@ fn run() -> Result<()> {
     let mut editor: Option<CurveEditor> = None;
     let mut capture: Option<Capture> = None;
     let mut last_seq = 0u64;
+    let mut last_switches = 0u64;
     let mut last_status: Option<Status> = None;
     // Config writes are batched (learning can change the curve often).
     let mut save_at: Option<Instant> = None;
@@ -560,6 +563,7 @@ fn run() -> Result<()> {
         };
         let set_mode = |cfg: &mut Config, m: AutoMode, save_at: &mut Option<Instant>| {
             cfg.auto_mode = m;
+            cfg.lid_switched = false;
             send(Cmd::SetAutoMode(m));
             set_auto(cfg, true, save_at);
         };
@@ -713,6 +717,13 @@ fn run() -> Result<()> {
                     cfg.follow_curve = follow;
                     cfg.curve_scale = s.curve_scale;
                     cfg.follow_scale = s.follow_scale;
+                    mark_dirty(&mut save_at);
+                }
+                // The lid switched the automatic mode: the menu follows.
+                if s.lid_switches != last_switches {
+                    last_switches = s.lid_switches;
+                    cfg.auto_mode = s.auto_mode;
+                    cfg.lid_switched = s.lid_switched;
                     mark_dirty(&mut save_at);
                 }
                 if s.manual_seq != last_seq {
@@ -1076,6 +1087,9 @@ mod tests {
             lux: Some(18.0),
             auto: mode != Mode::Manual,
             mode,
+            auto_mode: AutoMode::LightSensor,
+            lid_switched: false,
+            lid_switches: 0,
             panel: laptop.filter(|l| l.lid_open).map(|l| l.panel as f64),
             laptop,
             curve: config::default_curve(),

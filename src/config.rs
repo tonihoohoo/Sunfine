@@ -31,6 +31,10 @@ pub struct Config {
     /// laptop panel's brightness. Following the laptop falls back to the
     /// light sensor while the lid is closed.
     pub auto_mode: AutoMode,
+    /// `auto_mode` was switched from follow-laptop to the light sensor
+    /// because the lid closed; it switches back when the lid opens (unless
+    /// the user picks a mode in between, which clears this).
+    pub lid_switched: bool,
     /// Show the brightness popup on hotkey changes.
     pub osd: bool,
     /// Light-sensor curve: LG brightness (%) for each light level (lux).
@@ -155,6 +159,7 @@ impl Default for Config {
             step_factor: 1.2,
             fix_black_screen: true,
             auto_mode: AutoMode::FollowLaptop,
+            lid_switched: false,
             osd: true,
             curve: default_curve(),
             // None = "not in the file": `sanitized()` fills it (and migrates

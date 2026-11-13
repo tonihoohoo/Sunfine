@@ -351,6 +351,10 @@ pub struct Controller {
     follow: Vec<CurvePoint>,
     curve_scale: f64,
     follow_scale: f64,
+    /// `auto_mode` was switched to the light sensor by a closed lid.
+    lid_switched: bool,
+    /// Counts automatic mode switches (lid closed / opened).
+    lid_switches: u64,
 }
 
 impl Controller {
@@ -366,6 +370,8 @@ impl Controller {
             follow: Vec::new(),
             curve_scale: 1.0,
             follow_scale: 1.0,
+            lid_switched: false,
+            lid_switches: 0,
             cfg: Config::default(),
         };
         c.reconfigure(cfg);
@@ -376,6 +382,7 @@ impl Controller {
     pub fn reconfigure(&mut self, cfg: Config) {
         self.auto = cfg.auto;
         self.auto_mode = cfg.auto_mode;
+        self.lid_switched = cfg.lid_switched && cfg.auto_mode == AutoMode::LightSensor;
         self.curve = sanitize_curve(cfg.curve.clone());
         self.follow = follow_to_points(&sanitize_follow(cfg.follow()));
         self.curve_scale = sanitize_scale(cfg.curve_scale);
@@ -389,6 +396,16 @@ impl Controller {
 
     pub fn auto(&self) -> bool {
         self.auto
+    }
+    pub fn auto_mode(&self) -> AutoMode {
+        self.auto_mode
+    }
+    pub fn lid_switched(&self) -> bool {
+        self.lid_switched
+    }
+    /// Increments on every automatic mode switch by the lid.
+    pub fn lid_switches(&self) -> u64 {
+        self.lid_switches
     }
     pub fn level(&self) -> Option<u32> {
         self.level
@@ -450,8 +467,10 @@ impl Controller {
     pub fn set_auto(&mut self, on: bool) {
         self.auto = on;
     }
+    /// The user picked a mode: it stays, whatever the lid does.
     pub fn set_auto_mode(&mut self, m: AutoMode) {
         self.auto_mode = m;
+        self.lid_switched = false;
     }
     /// Edited curve (as shown, scale included): becomes the base, scale 1.
     pub fn set_curve(&mut self, pts: Vec<CurvePoint>) {
@@ -482,14 +501,74 @@ impl Controller {
     }
 
     /// New laptop state (from the poller, sent on change).
+    ///
+    /// Lid closed in follow-laptop mode: `auto_mode` switches to the light
+    /// sensor (the menu shows it); lid opened after such a switch: back to
+    /// follow-laptop. Neither switch changes the brightness: the curve
+    /// taking over is scaled to the current level ([`Self::hand_over`]).
     pub fn on_laptop(&mut self, laptop: Option<Laptop>, now: Instant) -> Option<u32> {
+        let before = self.mode();
+        let was_open = self.laptop.map(|l| l.lid_open);
         self.laptop = laptop;
         match laptop {
             // Not smoothed: Windows already animates the laptop panel.
             Some(l) if l.lid_open => self.panel = Some(Smooth::new(l.panel as f64, now)),
             _ => self.panel = None,
         }
+        // `None` is a failed read, not a lid change.
+        let is_open = laptop.map(|l| l.lid_open);
+        match is_open {
+            Some(false) if self.auto && self.auto_mode == AutoMode::FollowLaptop => {
+                self.auto_mode = AutoMode::LightSensor;
+                self.lid_switched = true;
+                self.lid_switches += 1;
+            }
+            Some(true) if self.lid_switched => {
+                self.auto_mode = AutoMode::FollowLaptop;
+                self.lid_switched = false;
+                self.lid_switches += 1;
+            }
+            _ => {}
+        }
+        let after = self.mode();
+        // Only on a real lid change: at start (no earlier laptop state) the
+        // level is not something the user chose.
+        if was_open.is_some() && is_open.is_some() && was_open != is_open && before != after {
+            self.hand_over(before, after);
+        }
         self.tick(now)
+    }
+
+    /// The input driving the brightness changed from `from` to `to`
+    /// without the user choosing it: scale the curve of `to` so it gives
+    /// the current level, so the brightness stays where it is and moves on
+    /// from there (like a manual change with `adjust = whole_curve`).
+    fn hand_over(&mut self, from: Mode, to: Mode) {
+        if from == Mode::Manual {
+            return;
+        }
+        let Some(level) = self.level else {
+            return;
+        };
+        let pct = level_to_percent(level);
+        match to {
+            Mode::LightSensor => {
+                if let Some(lux) = self.lg.as_mut().map(|s| {
+                    s.snap();
+                    x_lux(s.raw)
+                }) {
+                    let base = curve_percent(&self.curve, lux);
+                    self.curve_scale = rescale(base, pct, self.curve_scale);
+                }
+            }
+            Mode::LaptopSync => {
+                if let Some(p) = self.panel {
+                    let base = eval(&self.follow, Axis::Percent, p.value);
+                    self.follow_scale = rescale(base, pct, self.follow_scale);
+                }
+            }
+            Mode::Manual => {}
+        }
     }
 
     /// Advances smoothing to `now`; returns a level to apply, if any.
@@ -1059,27 +1138,51 @@ mod tests {
     }
 
     #[test]
-    fn lid_closed_falls_back_to_light_sensor_and_back() {
+    fn lid_closed_switches_to_light_sensor_and_back_without_a_jump() {
         let mut sim = Sim::new(follow(), 20000);
         sim.lux(18);
         sim.laptop(lap(60, true));
-        assert_eq!(sim.ctl.mode(), Mode::LaptopSync);
+        sim.run(5.0);
+        let level = sim.level();
+        sim.writes.clear();
+        // Lid closed: the selection moves to the light sensor, same level.
         sim.laptop(lap(60, false));
         assert_eq!(sim.ctl.mode(), Mode::LightSensor);
+        assert_eq!(sim.ctl.auto_mode(), AutoMode::LightSensor);
+        assert!(sim.ctl.lid_switched());
         sim.run(10.0);
-        assert!(near(
-            sim.level(),
-            curve_level(&default_curve(), 18.0),
-            SENSOR_SETTLED_PCT
-        ));
+        assert!(sim.writes.is_empty(), "no jump: {:?}", sim.writes);
+        assert_eq!(sim.level(), level);
+        // Lid opened: back to follow, still the same level.
         sim.laptop(lap(60, true));
         assert_eq!(sim.ctl.mode(), Mode::LaptopSync);
+        assert_eq!(sim.ctl.auto_mode(), AutoMode::FollowLaptop);
+        assert!(!sim.ctl.lid_switched());
         sim.run(5.0);
-        assert!(near(
-            sim.level(),
-            follow_level(&default_follow_points(), 60.0),
-            FOLLOW_PCT
-        ));
+        assert!(sim.writes.is_empty(), "no jump: {:?}", sim.writes);
+        assert_eq!(sim.level(), level);
+        assert_eq!(sim.ctl.lid_switches(), 2);
+    }
+
+    #[test]
+    fn manual_mode_choice_while_lid_closed_is_kept_when_it_opens() {
+        let mut sim = Sim::new(follow(), 20000);
+        sim.lux(18);
+        sim.laptop(lap(60, true));
+        sim.laptop(lap(60, false));
+        assert!(sim.ctl.lid_switched());
+        // The user picks the light sensor themselves.
+        sim.ctl.set_auto_mode(AutoMode::LightSensor);
+        assert!(!sim.ctl.lid_switched());
+        sim.laptop(lap(60, true));
+        assert_eq!(sim.ctl.mode(), Mode::LightSensor);
+        // Manual (auto off) is not switched on or off by the lid either.
+        let mut sim = Sim::new(follow(), 20000);
+        sim.ctl.set_auto(false);
+        sim.laptop(lap(60, true));
+        sim.laptop(lap(60, false));
+        assert_eq!(sim.ctl.mode(), Mode::Manual);
+        assert!(!sim.ctl.lid_switched());
     }
 
     #[test]
