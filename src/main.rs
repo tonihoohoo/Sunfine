@@ -704,7 +704,9 @@ fn run() -> Result<()> {
                 menus.refresh(&cfg, last_status.as_ref());
             }
             Event::UserEvent(UserEvent::HotKey(e)) if e.state == HotKeyState::Pressed => {
-                match shortcuts.action(e.id) {
+                let action = shortcuts.action(e.id);
+                log::info!("hotkey {:?}", action);
+                match action {
                     Some(Action::Up) => send(Cmd::Step { up: true }),
                     Some(Action::Down) => send(Cmd::Step { up: false }),
                     Some(Action::ToggleAuto) => {
@@ -1203,7 +1205,11 @@ mod tests {
     fn menu_view_is_stable_under_small_changes() {
         // Flicker fix: tiny lux / laptop-lux changes must not change what
         // the menu shows (no item would need repainting).
-        let cfg = Config { auto: true, auto_mode: AutoMode::LightSensor, ..Config::default() };
+        let cfg = Config {
+            auto: true,
+            auto_mode: AutoMode::LightSensor,
+            ..Config::default()
+        };
         let mut a = status(Mode::LightSensor, lid(true, Some(10.0)), 15556);
         let mut b = a.clone();
         a.lux = Some(18.2);
@@ -1212,4 +1218,3 @@ mod tests {
         assert_eq!(menu_view(&cfg, Some(&a)), menu_view(&cfg, Some(&b)));
     }
 }
-

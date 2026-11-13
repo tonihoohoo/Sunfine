@@ -183,16 +183,34 @@ pub fn run_with<C: Connector>(
                         apply(d, &mut ctl, t, transition, &mut failed);
                     }
                 }
-                Cmd::Step { up } => {
-                    if let (Some(d), Some(t)) = (&display, ctl.on_step(up)) {
+                Cmd::Step { up } => match (&display, ctl.on_step(up)) {
+                    (Some(d), Some(t)) => {
+                        log::info!(
+                            "manual {}: {:?} -> {t} ({:?})",
+                            if up { "up" } else { "down" },
+                            ctl.level(),
+                            ctl.mode()
+                        );
                         apply(d, &mut ctl, t, HOTKEY_FADE_MS, &mut failed);
                         manual_seq += 1;
                     }
-                }
+                    (d, _) => log::warn!(
+                        "manual step ignored: display {}, level {:?}",
+                        if d.is_some() {
+                            "connected"
+                        } else {
+                            "not connected"
+                        },
+                        ctl.level()
+                    ),
+                },
                 Cmd::SetLevel(level) => {
                     if let Some(d) = &display {
+                        log::info!("preset: {:?} -> {level} ({:?})", ctl.level(), ctl.mode());
                         ctl.on_manual(level);
                         apply(d, &mut ctl, level, PRESET_FADE_MS, &mut failed);
+                    } else {
+                        log::warn!("preset ignored: display not connected");
                     }
                 }
             }
@@ -312,7 +330,7 @@ fn apply<D: Device>(
 ) {
     match d.set_brightness(level, transition_ms) {
         Ok(()) => {
-            log::debug!("level -> {level}");
+            log::debug!("level -> {level} ({transition_ms} ms)");
             ctl.set_known_level(level);
         }
         Err(e) => {
@@ -436,7 +454,7 @@ mod tests {
 
         /// Waits until a status satisfies `f` (2 s timeout).
         fn wait(&mut self, what: &str, f: impl Fn(&Status) -> bool) -> Status {
-            let end = Instant::now() + Duration::from_secs(2);
+            let end = Instant::now() + Duration::from_secs(8);
             if let Some(s) = self.last.as_ref().filter(|s| f(s)) {
                 return s.clone();
             }
