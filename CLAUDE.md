@@ -25,6 +25,14 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 
 ## Auto-brightness design
 
+- Windows: when the laptop's own adaptive brightness is on, keep the LG in
+  sync with the laptop panel (both should look alike). Inputs: laptop panel
+  brightness (`root\wmi WmiMonitorBrightness`, events), Windows
+  ADAPTBRIGHT power setting, LG's own lux. Exact mapping to decide from
+  `tools/win_check.cmd` watch data. Windows' own brightness slider does not
+  show the LG (checked 2026-11-13); Windows adaptive brightness only drives
+  the internal panel.
+
 - Map lux -> level with a log curve, user-tunable min/max level and lux range.
 - Smooth: EMA on lux, apply only if target differs > ~3 %, use the device's own
   transition field (e.g. 800 ms) for fades.
@@ -37,20 +45,26 @@ Protocol is reverse-engineered and verified – read `docs/PROTOCOL.md` first.
 - Windows ALS: Microsoft's HID sensor driver fails (code 10) on iface 2 and
   hides it. **Working setup:** one-time manual driver swap of that device to
   "HID-compliant device" (admin, done by the user) -> hidapi reads iface 2
-  exactly like macOS. The app must detect the "not visible" case and tell the
-  user how to do the swap (README); fallback: laptop's own ALS via WinRT.
+  exactly like macOS. The app detects the "not visible" case (MI_02 bound
+  to `sensorshidclassdriver.inf`) and, **only when auto brightness is
+  enabled**, offers a button "Fix light sensor" that does the swap with a UAC
+  prompt (elevated helper, e.g. `UpdateDriverForPlugAndPlayDevices` with
+  input.inf – to verify). No other admin actions. Fallback: laptop's ALS.
   The iface 0 I2C bridge has no usable ALS – **never write to that bus.**
 - Windows: DDC/CI brightness (VCP 0x10, 0-100) also works through the
   standard monitor API (dxva2) – alternative to HID brightness, coarser.
 - Exact usable minimum brightness level (100 accepted; visual check needed).
 - Reconnect handling (display unplug / sleep).
 - Windows "USB device not recognized" on plug-in: a `VID_0000` device on the
-  laptop's own xHCI, probably harmless (all LG functions enumerate). **No automation that needs admin rights**
-  (user decision) – the app only re-opens the HID device when it reappears.
+  laptop's own xHCI, probably harmless (all LG functions enumerate). **No
+  background admin automation** (user decision; the only elevated action is
+  the user-clicked "Fix light sensor" button) – the app only re-opens the HID
+  device when it reappears.
 - Windows: display often stays **black** after plug-in. Verified fix, no
   admin: `SetDisplayConfig(SDC_APPLY | SDC_USE_DATABASE_CURRENT)`. Plan:
-  on display change / LG HID arrival, if a `GSM5B11` monitor is enumerated
-  but not attached to the desktop, re-apply (configurable, on by default; a
+  on display change / LG HID arrival, if the persisted topology
+  (`QueryDisplayConfig(QDC_DATABASE_CURRENT)`) has the LG active but the
+  live one does not (`win_check` verifies this), re-apply (configurable, on by default; a
   user who deliberately disabled the LG display turns it off). Also a tray
   item "Reset display". See `docs/PROTOCOL.md` (Windows).
 
@@ -66,6 +80,9 @@ WinRT LightSensor, hidapi test), writes `win_diag_<timestamp>.log`.
 `tools/win_research.cmd` (read-only): DDC/CI capabilities + VCP watch via
 dxva2 (`win_ddc.ps1 -WatchSeconds N`), logs to `win_research.log`.
 `uf_probe.py i2c-watch` does plain bridge reads and prints changes.
+`tools/win_check.cmd` (read-only): verdicts for display state (persisted vs.
+live topology), light sensor driver, laptop brightness / adaptive setting,
+plus a 60 s watch of laptop brightness + lux next to LG lux.
 `tools/win_display_reset.cmd` tests programmatic fixes for the black-screen
 case (CDS_RESET mode set, SetDisplayConfig re-apply, injected
 Win+Ctrl+Shift+B), logs to `win_display_reset.log`.
