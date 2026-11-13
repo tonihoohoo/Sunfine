@@ -1,10 +1,12 @@
-# ultrafine-ctl
+<p align="center"><img src="assets/logo.svg" width="128" alt="Sunfine logo"></p>
+
+# Sunfine
 
 Brightness hotkeys and automatic brightness for the **LG UltraFine 5K**
 (1st generation, 27MD5KA) on **Windows**.
 
 The display has no buttons, and Windows has no brightness control for it.
-ultrafine-ctl is a small tray app (one static `.exe`, no installer, no DLLs)
+Sunfine is a small tray app (one static `.exe`, no installer, no DLLs)
 that adds:
 
 - global shortcuts for brighter / darker, with a Windows-style popup on the LG
@@ -13,7 +15,8 @@ that adds:
 - an editable brightness curve that learns from your manual adjustments
 - a fix for the LG staying black after it is plugged in
 
-Current version: 0.7. The USB protocol was reverse-engineered and is
+Current version: 0.7. The repository, the exe and the settings folder are
+still called `ultrafine-ctl`. The USB protocol was reverse-engineered and is
 documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 > Not affiliated with or endorsed by LG Electronics or Apple. Use at your own
