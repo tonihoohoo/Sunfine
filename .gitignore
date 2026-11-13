@@ -1,0 +1,5 @@
+/target
+*.log
+!docs/logs/*.log
+__pycache__/
+.DS_Store
