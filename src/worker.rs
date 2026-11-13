@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use hidapi::HidApi;
 
-use crate::config::{Config, CurvePoint, LightSource, SyncCal};
+use crate::config::{AutoMode, Config, CurvePoint, LightSource, SyncCal};
 use crate::curve::{Controller, Mode};
 use crate::device::Display;
 use crate::laptop::Laptop;
@@ -20,7 +20,7 @@ pub enum Cmd {
     /// Absolute level from the slider (no popup).
     SetLevel(u32),
     SetAuto(bool),
-    SetSync(bool),
+    SetAutoMode(AutoMode),
     SetSource(LightSource),
     SetCurve(Vec<CurvePoint>),
     Laptop(Option<Laptop>),
@@ -85,8 +85,8 @@ pub fn run(cfg: Config, rx: Receiver<Cmd>, notify: impl Fn(Status)) {
                     ctl.set_auto(on);
                     retarget = true;
                 }
-                Cmd::SetSync(on) => {
-                    ctl.set_sync_enabled(on);
+                Cmd::SetAutoMode(m) => {
+                    ctl.set_auto_mode(m);
                     retarget = true;
                 }
                 Cmd::SetSource(src) => {

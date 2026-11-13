@@ -24,9 +24,10 @@ pub struct Config {
     /// Windows: re-apply the saved display layout when the LG is connected
     /// but left black (persisted layout has it on, live layout does not).
     pub fix_black_screen: bool,
-    /// Windows: while auto mode is on, the laptop's own adaptive brightness
-    /// is on and the lid is open, make the LG follow the laptop panel.
-    pub sync_laptop: bool,
+    /// What automatic brightness follows: the light sensor (curve) or the
+    /// laptop panel's brightness. Following the laptop falls back to the
+    /// light sensor while the lid is closed.
+    pub auto_mode: AutoMode,
     /// Show the brightness popup on hotkey changes.
     pub osd: bool,
     /// Which light sensor drives the curve: the LG's own or the laptop's.
@@ -38,6 +39,17 @@ pub struct Config {
     /// sync and whenever the user adjusts the LG while syncing.
     pub sync_cal: Option<SyncCal>,
     pub hotkeys: Hotkeys,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoMode {
+    /// Brightness curve driven by a light sensor.
+    LightSensor,
+    /// LG brightness follows the laptop panel brightness (any cause: the
+    /// laptop's adaptive brightness, Fn keys, Windows slider).
+    #[default]
+    FollowLaptop,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -88,7 +100,7 @@ impl Default for Config {
             apply_threshold_percent: 3.0,
             step_factor: 1.2,
             fix_black_screen: true,
-            sync_laptop: true,
+            auto_mode: AutoMode::FollowLaptop,
             osd: true,
             light_source: LightSource::Display,
             curve: default_curve(),

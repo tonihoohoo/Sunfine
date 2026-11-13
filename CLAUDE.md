@@ -53,8 +53,13 @@ light source option (laptop sensor via WinRT, falls back to the LG sensor
 when the lid is closed), initial lux via GET_REPORT (HidD_GetInputReport on
 Windows; unverified on the device).
 `cargo test` renders target/{osd,panel,editor}_preview.png for a visual check.
-Not done yet: "Fix light sensor" button (UAC), logging to file for the GUI
-build. Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
+v0.4: `config.auto_mode` = light_sensor | follow_laptop (follow works without
+the laptop's adaptive brightness; lid closed -> light sensor); all settings in
+the panel (stays open, invalid options greyed via `PanelState`); short
+right-click menu (native menus always close on click); popup fix: no
+click-through on Windows (tao makes it WS_EX_LAYERED -> grey box); log file
+`ultrafine-ctl.log` next to the config.
+Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 
 ## Auto-brightness design
