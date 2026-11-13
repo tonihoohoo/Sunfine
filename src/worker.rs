@@ -135,9 +135,17 @@ const FADE_MARGIN: Duration = Duration::from_millis(50);
 /// without a fade (which unsticks the firmware); if the display ignores that
 /// too, the handles are dropped and reopened (which re-reads the real level).
 /// At most one extra write per write, so this never floods.
+///
+/// The display can also get into a state where it ignores *every* faded
+/// write, even after a minute of quiet, and takes only writes without a fade
+/// (sunfine.log 2026-11-13 12:09-12:13). When a faded write is ignored but
+/// the same level without a fade is taken, fades are switched off until the
+/// display is reconnected (power cycle / replug).
 #[derive(Default)]
 struct Writer {
     last: Option<Instant>,
+    /// The display ignores faded writes: send every level without a fade.
+    no_fade: bool,
     /// When the fade started by the last write is over.
     fade_end: Option<Instant>,
     /// (level, fade ms, manual: log the read-back at info level)
@@ -156,6 +164,7 @@ impl Writer {
     fn reset(&mut self) {
         self.pending = None;
         self.fade_end = None;
+        self.no_fade = false;
     }
 
     /// Sends the waiting request once the gap has passed and the previous
@@ -164,6 +173,7 @@ impl Writer {
         let Some((level, fade, manual)) = self.pending else {
             return;
         };
+        let fade = if self.no_fade { 0 } else { fade };
         let now = Instant::now();
         if self
             .last
@@ -197,7 +207,15 @@ impl Writer {
             return;
         }
         match verify(d, level, true) {
-            Check::Ok => {}
+            Check::Ok => {
+                if fade > 0 && !self.no_fade {
+                    log::warn!(
+                        "display ignores faded writes; sending levels without a fade \
+                         until it is reconnected"
+                    );
+                    self.no_fade = true;
+                }
+            }
             Check::Mismatch | Check::Failed => {
                 log::warn!("display ignores brightness writes; reopening it");
                 *failed = true;
@@ -519,6 +537,8 @@ mod tests {
         /// Firmware model from sunfine.log: a faded write during a running
         /// fade sticks the level until a write without a fade arrives.
         overlap_sticks: bool,
+        /// Firmware state from sunfine.log: faded writes never apply.
+        ignore_faded: bool,
         stuck: bool,
         got_stuck: bool,
         fade_until: Option<Instant>,
@@ -558,7 +578,7 @@ mod tests {
             if transition_ms == 0 {
                 s.stuck = false;
             }
-            if !s.ignore_writes && !s.stuck {
+            if !s.ignore_writes && !s.stuck && !(s.ignore_faded && transition_ms > 0) {
                 s.level = level;
             }
             s.fade_until = Some(now + Duration::from_millis(transition_ms as u64));
@@ -1106,6 +1126,36 @@ mod tests {
         assert!(target > 10848);
         assert_eq!(sim.level, target, "display took the level");
         assert_eq!(sim.writes, vec![(target, HOTKEY_FADE_MS), (target, 0)]);
+        assert_eq!(sim.opens, 1, "no reopen needed");
+    }
+    #[test]
+    fn display_that_ignores_fades_gets_levels_without_fade() {
+        let mut h = Harness::start(
+            Config {
+                auto: false,
+                ..sensor_cfg()
+            },
+            Sim {
+                ignore_faded: true,
+                ..present(14307)
+            },
+        );
+        h.wait("connected", |s| s.connected);
+        h.send(Cmd::Step { up: true });
+        let a = h.wait("first step", |s| s.manual_seq == 1).level.unwrap();
+        h.settle();
+        assert_eq!(h.sim().level, a);
+        h.send(Cmd::Step { up: true });
+        let b = h.wait("second step", |s| s.manual_seq == 2).level.unwrap();
+        h.settle();
+        let sim = h.sim();
+        assert_eq!(sim.level, b, "second step applied");
+        // One faded try, its resend, then no more fades.
+        assert_eq!(
+            sim.writes,
+            vec![(a, HOTKEY_FADE_MS), (a, 0), (b, 0)],
+            "writes"
+        );
         assert_eq!(sim.opens, 1, "no reopen needed");
     }
 }

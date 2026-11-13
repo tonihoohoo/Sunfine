@@ -107,6 +107,9 @@ mode, 300 ms fades every 150 ms, display kept reporting 10848 for every write
 until a write without a fade). `Writer` now waits for the previous fade (+50
 ms) before the next write, reads back every write, and on a mismatch resends
 at once without a fade (reopens if that is ignored too).
+The display can also ignore *every* faded write (log 12:09-12:13, even
+after a minute of quiet) while taking writes without a fade: then `Writer`
+switches fades off until the display reconnects (`no_fade`).
 Not done yet: "Fix light sensor" button (UAC). Fn+F5/F6 cannot be hooked (laptop firmware); with sync on they move
 the LG too.
 
