@@ -1,4 +1,4 @@
-# Sunfine (repo `ultrafine-ctl`)
+# Sunfine (repo `tonihoohoo/sunfine`, formerly `ultrafine-ctl`)
 
 Brightness hotkeys + automatic brightness for the LG UltraFine 5K (1st gen,
 27MD5KA) on **Windows only** (user decision 2026-11-13: no macOS release; the
